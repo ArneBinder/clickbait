@@ -110,7 +110,7 @@ def get_features(docs_w_context, max_lengths):
 
 
 def get_texts(contents, keys=('postText', 'targetTitle', 'targetDescription', 'targetKeywords', 'targetParagraphs',
-                              'targetCaptions')):
+                              'targetCaptions'), max_entries=1):
     for i, c in enumerate(contents):
         for k in keys:
             values = c.get(k, None)
@@ -118,24 +118,18 @@ def get_texts(contents, keys=('postText', 'targetTitle', 'targetDescription', 't
                 continue
             if not isinstance(values, list):
                 values = [values]
-            yield (' '.join(values), (c['id'], k, c.get('label', None)))
+            yield (' '.join(values[:max_entries]), (c['id'], k, c.get('label', None)))
 
 
 def train(train_content, dev_content,
           lstm_shapes, lstm_setting, lstm_optimizer, batch_size=100,
-          nb_epoch=5, nb_threads_parse=3):
+          nb_epoch=5, nb_threads_parse=3, max_entries=1):
     print("Loading spaCy")
     nlp = spacy.load('en_vectors_web_lg')
     nlp.add_pipe(nlp.create_pipe('sentencizer'))
     embeddings = get_embeddings(nlp.vocab)
-    #model = compile_lstm(embeddings, lstm_shape, lstm_settings)
     keys = sorted(list(lstm_shapes.keys()))
     lstms = [create_lstm(embeddings, lstm_shapes[k], lstm_setting) for k in keys]
-    #lstm_paragraphs = create_lstm(embeddings, {'max_length': 1000, 'nr_hidden': 300}, lstm_settings)
-    #lstm_post = create_lstm(embeddings, {'max_length': 50, 'nr_hidden': 100}, lstm_settings)
-    #lstm_title = create_lstm(embeddings, {'max_length': 50, 'nr_hidden': 100}, lstm_settings)
-    #lstm_keywords = create_lstm(embeddings, {'max_length': 100, 'nr_hidden': 100}, lstm_settings)
-    #lstm_description = create_lstm(embeddings, {'max_length': 100, 'nr_hidden': 100}, lstm_settings)
 
     joint = merge([lstm.output for lstm in lstms], mode='concat')
     joint = Dense(512, activation='relu')(joint)
@@ -146,16 +140,10 @@ def train(train_content, dev_content,
     model.compile(optimizer=Adam(lr=lstm_setting['lr']), loss='binary_crossentropy', metrics=['accuracy'])
 
     print("Parsing texts...")
-    #train_texts = (' '.join(content['targetParagraphs']) for content in train_content)
-    #dev_texts = (' '.join(content['targetParagraphs']) for content in dev_content)
-    #train_docs = list(nlp.pipe(train_texts, n_threads=nb_threads_parse))
-    #dev_docs = list(nlp.pipe(dev_texts, n_threads=nb_threads_parse))
-    train_docs_w_context = nlp.pipe(get_texts(train_content, keys=keys), n_threads=nb_threads_parse, as_tuples=True)
-    dev_docs_w_context = nlp.pipe(get_texts(dev_content, keys=keys), n_threads=nb_threads_parse, as_tuples=True)
-
-    #if by_sentence:
-    #    train_docs, train_labels = get_labelled_sentences(train_docs, train_labels)
-    #    dev_docs, dev_labels = get_labelled_sentences(dev_docs, dev_labels)
+    train_docs_w_context = nlp.pipe(get_texts(train_content, keys=keys, max_entries=max_entries),
+                                    n_threads=nb_threads_parse, as_tuples=True)
+    dev_docs_w_context = nlp.pipe(get_texts(dev_content, keys=keys, max_entries=max_entries),
+                                  n_threads=nb_threads_parse, as_tuples=True)
 
     train_X, train_labels = get_features(train_docs_w_context, {k: lstm_shapes[k]['max_length'] for k in keys})
     dev_X, dev_labels = get_features(dev_docs_w_context, {k: lstm_shapes[k]['max_length'] for k in keys})
@@ -208,6 +196,7 @@ def get_embeddings(vocab):
     return vocab.vectors.data
 
 
+#TODO: adapt for multi-lstm model
 def evaluate(model_dir, contents, labels, max_length=100):
     def create_pipeline(nlp):
         '''
@@ -315,8 +304,6 @@ def main(model_dir=None, train_dir=None, dev_dir=None,
             dev_texts, dev_labels = zip(*imdb_data[1])
         else:
             dev_texts, dev_labels = read_data(pathlib.Path(dev_dir), limit=nr_examples)
-        #train_labels = numpy.asarray(train_labels, dtype='int32')
-        #dev_labels = numpy.asarray(dev_labels, dtype='int32')
         lstm_shapes = {
             'targetParagraphs': {'max_length': 1000, 'nr_hidden': 300},
             'postText': {'max_length': 50, 'nr_hidden': 30},
@@ -328,7 +315,8 @@ def main(model_dir=None, train_dir=None, dev_dir=None,
                      lstm_shapes,
                      {'dropout': dropout, 'lr': learn_rate},
                      {},
-                     nb_epoch=nb_epoch, batch_size=batch_size, nb_threads_parse=nb_threads_parse)
+                     nb_epoch=nb_epoch, batch_size=batch_size, nb_threads_parse=nb_threads_parse,
+                     max_entries=999)
         weights = lstm.get_weights()
         if model_dir is not None:
             with (model_dir / 'model').open('wb') as file_:
