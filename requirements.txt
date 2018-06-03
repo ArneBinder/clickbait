@@ -1,0 +1,6 @@
+spacy>=2.0.0
+keras
+numpy
+cytoolz
+tensorflow
+plac
