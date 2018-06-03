@@ -17,8 +17,9 @@ import pathlib
 import cytoolz #install
 import numpy #install
 #keras: install
+from keras import Model
 from keras.models import Sequential, model_from_json
-from keras.layers import LSTM, Dense, Embedding, Bidirectional
+from keras.layers import LSTM, Dense, Embedding, Bidirectional, merge, Dropout
 from keras.layers import TimeDistributed
 from keras.optimizers import Adam
 import thinc.extra.datasets
@@ -77,21 +78,35 @@ def get_labelled_sentences(docs, doc_labels):
     return sentences, numpy.asarray(labels, dtype='int32')
 
 
-def get_features(docs, max_length):
-    docs = list(docs)
-    Xs = numpy.zeros((len(docs), max_length), dtype='int32')
-    for i, doc in enumerate(docs):
-        j = 0
-        for token in doc:
-            vector_id = token.vocab.vectors.find(key=token.orth)
-            if vector_id >= 0:
-                Xs[i, j] = vector_id
-            else:
-                Xs[i, j] = 0
-            j += 1
-            if j >= max_length:
-                break
-    return Xs
+def get_features(docs_w_context, max_lengths):
+    records_dict = {}
+    for i, (doc, c) in enumerate(docs_w_context):
+        #c = contexts[i]
+        current_record = records_dict.get(c[0], {})
+        current_record[c[1]] = doc
+        current_record['label'] = c[2]
+        records_dict[c[0]] = current_record
+
+    #docs = list(docs)
+    Xs = {}
+    for k in max_lengths.keys():
+        Xs[k] = numpy.zeros((len(records_dict), max_lengths[k]), dtype='int32')
+
+    labels = []
+    for i, docs in enumerate(records_dict.values()):
+        labels.append(docs['label'])
+        for k in max_lengths.keys():
+            j = 0
+            for token in docs[k]:
+                vector_id = token.vocab.vectors.find(key=token.orth)
+                if vector_id >= 0:
+                    Xs[k][i, j] = vector_id
+                else:
+                    Xs[k][i, j] = 0
+                j += 1
+                if j >= max_lengths[k]:
+                    break
+    return Xs, labels
 
 
 def get_texts(contents, keys=('postText', 'targetTitle', 'targetDescription', 'targetKeywords', 'targetParagraphs',
@@ -106,27 +121,65 @@ def get_texts(contents, keys=('postText', 'targetTitle', 'targetDescription', 't
             yield (' '.join(values), (c['id'], k, c.get('label', None)))
 
 
-def train(train_content, train_labels, dev_content, dev_labels,
-          lstm_shape, lstm_settings, lstm_optimizer, batch_size=100,
-          nb_epoch=5, by_sentence=True, nb_threads_parse=3):
+def train(train_content, dev_content,
+          lstm_shapes, lstm_setting, lstm_optimizer, batch_size=100,
+          nb_epoch=5, nb_threads_parse=3):
     print("Loading spaCy")
     nlp = spacy.load('en_vectors_web_lg')
     nlp.add_pipe(nlp.create_pipe('sentencizer'))
     embeddings = get_embeddings(nlp.vocab)
-    model = compile_lstm(embeddings, lstm_shape, lstm_settings)
-    print("Parsing texts...")
-    train_texts = (' '.join(content['targetParagraphs']) for content in train_content)
-    dev_texts = (' '.join(content['targetParagraphs']) for content in dev_content)
-    train_docs = list(nlp.pipe(train_texts, n_threads=nb_threads_parse))
-    dev_docs = list(nlp.pipe(dev_texts, n_threads=nb_threads_parse))
-    if by_sentence:
-        train_docs, train_labels = get_labelled_sentences(train_docs, train_labels)
-        dev_docs, dev_labels = get_labelled_sentences(dev_docs, dev_labels)
+    #model = compile_lstm(embeddings, lstm_shape, lstm_settings)
+    keys = sorted(list(lstm_shapes.keys()))
+    lstms = [create_lstm(embeddings, lstm_shapes[k], lstm_setting) for k in keys]
+    #lstm_paragraphs = create_lstm(embeddings, {'max_length': 1000, 'nr_hidden': 300}, lstm_settings)
+    #lstm_post = create_lstm(embeddings, {'max_length': 50, 'nr_hidden': 100}, lstm_settings)
+    #lstm_title = create_lstm(embeddings, {'max_length': 50, 'nr_hidden': 100}, lstm_settings)
+    #lstm_keywords = create_lstm(embeddings, {'max_length': 100, 'nr_hidden': 100}, lstm_settings)
+    #lstm_description = create_lstm(embeddings, {'max_length': 100, 'nr_hidden': 100}, lstm_settings)
 
-    train_X = get_features(train_docs, lstm_shape['max_length'])
-    dev_X = get_features(dev_docs, lstm_shape['max_length'])
-    model.fit(train_X, train_labels, validation_data=(dev_X, dev_labels),
+    joint = merge([lstm.output for lstm in lstms], mode='concat')
+    joint = Dense(512, activation='relu')(joint)
+    joint = Dropout(0.5)(joint)
+    predictions = Dense(1, activation='sigmoid')(joint)
+
+    model = Model(inputs=[lstm.input for lstm in lstms], outputs=[predictions])
+    model.compile(optimizer=Adam(lr=lstm_setting['lr']), loss='binary_crossentropy', metrics=['accuracy'])
+
+    print("Parsing texts...")
+    #train_texts = (' '.join(content['targetParagraphs']) for content in train_content)
+    #dev_texts = (' '.join(content['targetParagraphs']) for content in dev_content)
+    #train_docs = list(nlp.pipe(train_texts, n_threads=nb_threads_parse))
+    #dev_docs = list(nlp.pipe(dev_texts, n_threads=nb_threads_parse))
+    train_docs_w_context = nlp.pipe(get_texts(train_content, keys=keys), n_threads=nb_threads_parse, as_tuples=True)
+    dev_docs_w_context = nlp.pipe(get_texts(dev_content, keys=keys), n_threads=nb_threads_parse, as_tuples=True)
+
+    #if by_sentence:
+    #    train_docs, train_labels = get_labelled_sentences(train_docs, train_labels)
+    #    dev_docs, dev_labels = get_labelled_sentences(dev_docs, dev_labels)
+
+    train_X, train_labels = get_features(train_docs_w_context, {k: lstm_shapes[k]['max_length'] for k in keys})
+    dev_X, dev_labels = get_features(dev_docs_w_context, {k: lstm_shapes[k]['max_length'] for k in keys})
+    model.fit([train_X[k] for k in keys], train_labels, validation_data=([dev_X[k] for k in keys], dev_labels),
               nb_epoch=nb_epoch, batch_size=batch_size)
+    return model
+
+
+def create_lstm(embeddings, shape, settings):
+    model = Sequential()
+    model.add(
+        Embedding(
+            embeddings.shape[0],
+            embeddings.shape[1],
+            input_length=shape['max_length'],
+            trainable=False,
+            weights=[embeddings],
+            mask_zero=True
+        )
+    )
+    model.add(TimeDistributed(Dense(shape['nr_hidden'], use_bias=False)))
+    model.add(Bidirectional(LSTM(shape['nr_hidden'],
+                                 recurrent_dropout=settings['dropout'],
+                                 dropout=settings['dropout'])))
     return model
 
 
@@ -262,10 +315,17 @@ def main(model_dir=None, train_dir=None, dev_dir=None,
             dev_texts, dev_labels = zip(*imdb_data[1])
         else:
             dev_texts, dev_labels = read_data(pathlib.Path(dev_dir), limit=nr_examples)
-        train_labels = numpy.asarray(train_labels, dtype='int32')
-        dev_labels = numpy.asarray(dev_labels, dtype='int32')
-        lstm = train(train_texts, train_labels, dev_texts, dev_labels,
-                     {'nr_hidden': nr_hidden, 'max_length': max_length, 'nr_class': 1},
+        #train_labels = numpy.asarray(train_labels, dtype='int32')
+        #dev_labels = numpy.asarray(dev_labels, dtype='int32')
+        lstm_shapes = {
+            'targetParagraphs': {'max_length': 1000, 'nr_hidden': 300},
+            'postText': {'max_length': 50, 'nr_hidden': 30},
+            'targetTitle': {'max_length': 50, 'nr_hidden': 30},
+            'targetKeywords': {'max_length': 100, 'nr_hidden': 64},
+            'targetDescription': {'max_length': 100, 'nr_hidden': 64}
+        }
+        lstm = train(train_texts, dev_texts,
+                     lstm_shapes,
                      {'dropout': dropout, 'lr': learn_rate},
                      {},
                      nb_epoch=nb_epoch, batch_size=batch_size, nb_threads_parse=nb_threads_parse)
