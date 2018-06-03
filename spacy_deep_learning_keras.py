@@ -9,6 +9,7 @@ pip install keras==2.0.9
 
 Compatible with: spaCy v2.0.0+
 """
+import json
 
 import plac #install
 import random
@@ -93,7 +94,19 @@ def get_features(docs, max_length):
     return Xs
 
 
-def train(train_texts, train_labels, dev_texts, dev_labels,
+def get_texts(contents, keys=('postText', 'targetTitle', 'targetDescription', 'targetKeywords', 'targetParagraphs',
+                              'targetCaptions')):
+    for i, c in enumerate(contents):
+        for k in keys:
+            values = c.get(k, None)
+            if values is None:
+                continue
+            if not isinstance(values, list):
+                values = [values]
+            yield (' '.join(values), (c['id'], k, c.get('label', None)))
+
+
+def train(train_content, train_labels, dev_content, dev_labels,
           lstm_shape, lstm_settings, lstm_optimizer, batch_size=100,
           nb_epoch=5, by_sentence=True, nb_threads_parse=3):
     print("Loading spaCy")
@@ -102,6 +115,8 @@ def train(train_texts, train_labels, dev_texts, dev_labels,
     embeddings = get_embeddings(nlp.vocab)
     model = compile_lstm(embeddings, lstm_shape, lstm_settings)
     print("Parsing texts...")
+    train_texts = (' '.join(content['targetParagraphs']) for content in train_content)
+    dev_texts = (' '.join(content['targetParagraphs']) for content in dev_content)
     train_docs = list(nlp.pipe(train_texts, n_threads=nb_threads_parse))
     dev_docs = list(nlp.pipe(dev_texts, n_threads=nb_threads_parse))
     if by_sentence:
@@ -132,8 +147,7 @@ def compile_lstm(embeddings, shape, settings):
                                  recurrent_dropout=settings['dropout'],
                                  dropout=settings['dropout'])))
     model.add(Dense(shape['nr_class'], activation='sigmoid'))
-    model.compile(optimizer=Adam(lr=settings['lr']), loss='binary_crossentropy',
-		  metrics=['accuracy'])
+    model.compile(optimizer=Adam(lr=settings['lr']), loss='binary_crossentropy', metrics=['accuracy'])
     return model
 
 
@@ -141,26 +155,33 @@ def get_embeddings(vocab):
     return vocab.vectors.data
 
 
-def evaluate(model_dir, texts, labels, max_length=100):
+def evaluate(model_dir, contents, labels, max_length=100):
     def create_pipeline(nlp):
         '''
         This could be a lambda, but named functions are easier to read in Python.
         '''
-        return [nlp.tagger, nlp.parser, SentimentAnalyser.load(model_dir, nlp,
+        #return [nlp.tagger, nlp.parser, SentimentAnalyser.load(model_dir, nlp,
+        #                                                       max_length=max_length)]
+        return [nlp.create_pipe('sentencizer'), SentimentAnalyser.load(model_dir, nlp,
                                                                max_length=max_length)]
 
-    nlp = spacy.load('en')
-    nlp.pipeline = create_pipeline(nlp)
+    #nlp = spacy.load('en')
+    nlp = spacy.load('en_vectors_web_lg')
+    #nlp.pipeline = create_pipeline(nlp)
+    nlp.add_pipe(nlp.create_pipe('sentencizer'))
+    nlp.add_pipe(SentimentAnalyser.load(model_dir, nlp, max_length=max_length))
 
     correct = 0
     i = 0
-    for doc in nlp.pipe(texts, batch_size=1000, n_threads=4):
-        correct += bool(doc.sentiment >= 0.5) == bool(labels[i])
+    for doc, context in nlp.pipe(get_texts(contents, keys=['targetParagraphs']), batch_size=1000, n_threads=4,
+                                 as_tuples=True):
+        #correct += bool(doc.sentiment >= 0.5) == bool(labels[i])
+        correct += bool(doc.sentiment >= 0.5) == bool(context[-1])
         i += 1
     return float(correct) / i
 
 
-def read_data(data_dir, limit=0):
+def read_data_dep(data_dir, limit=0):
     examples = []
     for subdir, label in (('pos', 1), ('neg', 0)):
         #for filename in (os.path.join(data_dir, subdir)).iterdir():
@@ -168,6 +189,32 @@ def read_data(data_dir, limit=0):
             with filename.open() as file_:
                 text = file_.read()
             examples.append((text, label))
+    random.shuffle(examples)
+    if limit >= 1:
+        examples = examples[:limit]
+    return zip(*examples) # Unzips into two lists
+
+
+def read_data(data_dir, limit=0):
+
+    truth = {}
+    if (data_dir / 'truth.jsonl').exists():
+        with (data_dir / 'truth.jsonl').open() as file_:
+            for l in file_:
+                record = json.loads(l)
+                truth[record['id']] = record
+
+    examples = []
+    with (data_dir / 'instances.jsonl').open() as file_:
+        for l in file_:
+            record = json.loads(l)
+            if record['id'] in truth:
+                label = 1 if truth[record['id']]['truthClass'] == 'clickbait' else 0
+            else:
+                label = None
+            record['label'] = label
+            examples.append((record, label))
+
     random.shuffle(examples)
     if limit >= 1:
         examples = examples[:limit]
@@ -196,6 +243,7 @@ def main(model_dir=None, train_dir=None, dev_dir=None,
     if model_dir is not None:
         model_dir = pathlib.Path(model_dir)
     if train_dir is None or dev_dir is None:
+        raise NotImplementedError('dataset fetching not implemented')
         imdb_data = thinc.extra.datasets.imdb()
     if is_runtime:
         if dev_dir is None:
@@ -225,7 +273,7 @@ def main(model_dir=None, train_dir=None, dev_dir=None,
         if model_dir is not None:
             with (model_dir / 'model').open('wb') as file_:
                 pickle.dump(weights[1:], file_)
-            with (model_dir / 'config.json').open('wb') as file_:
+            with (model_dir / 'config.json').open('w') as file_:
                 file_.write(lstm.to_json())
 
 
