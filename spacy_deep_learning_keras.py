@@ -20,9 +20,10 @@ import numpy #install
 from keras import Model, Input
 from keras.models import Sequential, model_from_json
 from keras.layers import LSTM, Dense, Embedding, Bidirectional, concatenate, Dropout, Concatenate, SpatialDropout1D, \
-    BatchNormalization, Conv1D, GlobalMaxPooling1D
+    BatchNormalization, Conv1D, GlobalMaxPooling1D, MaxPooling1D, GlobalAveragePooling1D
 from keras.layers import TimeDistributed
 from keras.optimizers import Adam
+from keras.callbacks import EarlyStopping
 import thinc.extra.datasets
 from spacy.compat import pickle
 import spacy #install
@@ -130,6 +131,18 @@ def create_lstm(input, shape, settings):
     return x
 
 
+def create_lstm_stacked(input, shape, settings):
+    x = TimeDistributed(Dense(shape['nr_hidden'], use_bias=False))(input)
+    x = Bidirectional(LSTM(shape['nr_hidden'], recurrent_dropout=settings['dropout'], dropout=settings['dropout'],
+                           return_sequences=True))(x)
+    x = TimeDistributed(Dense(shape['nr_hidden'], use_bias=False))(x)
+    x = Bidirectional(LSTM(shape['nr_hidden'], recurrent_dropout=settings['dropout'], dropout=settings['dropout'],
+                           return_sequences=True))(x)
+    x = TimeDistributed(Dense(shape['nr_hidden'], use_bias=False))(x)
+    x = Bidirectional(LSTM(shape['nr_hidden'], recurrent_dropout=settings['dropout'], dropout=settings['dropout']))(x)
+    return x
+
+
 def create_cnn(input, shape, settings):
     x = SpatialDropout1D(rate=settings['dropout'])(input)
     x = BatchNormalization()(x)
@@ -141,6 +154,17 @@ def create_cnn(input, shape, settings):
     x = Dropout(settings['dropout'])(x)
     x = GlobalMaxPooling1D()(x)
     x = BatchNormalization()(x)
+    x = Dropout(settings['dropout'])(x)
+    return x
+
+
+def create_cnn2(input, shape, settings):
+    x = Conv1D(64, 3, activation='relu')(input)
+    x = Conv1D(64, 3, activation='relu')(x)
+    x = MaxPooling1D(3)(x)
+    x = Conv1D(128, 3, activation='relu')(x)
+    x = Conv1D(128, 3, activation='relu')(x)
+    x = GlobalAveragePooling1D()(x)
     x = Dropout(settings['dropout'])(x)
     return x
 
@@ -323,8 +347,8 @@ def main(model_dir=None, train_dir=None, dev_dir=None,
         cnn_shapes = {
             'targetParagraphs': {'max_length': 500, 'filter_length': 10, 'nb_filter': 200},
             'postText': {'max_length': 50, 'filter_length': 3, 'nb_filter': 50},
-            'targetTitle': {'max_length': 50, 'filter_length': 3, 'nb_filter': 50},
-            'targetKeywords': {'max_length': 100, 'filter_length': 5, 'nb_filter': 50},
+            'targetTitle': {'max_length': 50, 'filter_length': 2, 'nb_filter': 50},
+            'targetKeywords': {'max_length': 100, 'filter_length': 1, 'nb_filter': 50},
             'targetDescription': {'max_length': 100, 'filter_length': 5, 'nb_filter': 50}
         }
 
@@ -346,15 +370,29 @@ def main(model_dir=None, train_dir=None, dev_dir=None,
             print('use cnn model')
             shapes = cnn_shapes
             create_single = create_cnn
+        elif model_type == 'cnn2':
+            print('use cnn2 model')
+            shapes = cnn_shapes
+            create_single = create_cnn2
+        elif model_type == 'lstm_stacked':
+            print('use lstm_stacked model')
+            shapes = cnn_shapes
+            create_single = create_lstm_stacked
         else:
             raise ValueError('unknown model_type=%s. use one of: %s' % (model_type, ' '.join(['lstm', 'cnn'])))
         model = create_model(embedding_weights=get_embeddings(nlp.vocab), shapes=shapes,
                              setting={'dropout': dropout, 'lr': learn_rate},
                              create_single=create_single)
 
+        callbacks = [
+            EarlyStopping(monitor='mse', min_delta=1e-4, patience=3, verbose=1),
+            #keras.callbacks.ReduceLROnPlateau(monitor='loss', factor=0.1, epsilon=0.0001, patience=2, cooldown=1,
+            #                                  verbose=1)
+        ]
+
         model.fit(as_list(train_X), train_labels,
                   validation_data=(as_list(dev_X), dev_labels),
-                  epochs=nb_epoch, batch_size=batch_size)
+                  epochs=nb_epoch, batch_size=batch_size, callbacks=callbacks)
 
         # finally evaluate and write out dev results
         y = model.predict(as_list(dev_X))
