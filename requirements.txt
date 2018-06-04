@@ -5,3 +5,4 @@ cytoolz
 tensorflow
 plac
 scikit-learn
+pillow

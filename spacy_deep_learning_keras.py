@@ -10,29 +10,38 @@ pip install keras==2.0.9
 Compatible with: spaCy v2.0.0+
 """
 import json
-
-import plac #install
-import random
+import logging
 import pathlib
-import cytoolz #install
-import numpy as np #install
-#keras: install
+import random
+
+import cytoolz  # install
+import numpy as np  # install
+import plac  # install
+import spacy  # install
+import thinc.extra.datasets
+# tensorflow: install
+# keras: install
 from keras import Model, Input
 from keras.applications.vgg16 import VGG16
-from keras.preprocessing import image
 from keras.applications.vgg16 import preprocess_input
-from keras.models import Sequential, model_from_json
-from keras.layers import LSTM, Dense, Embedding, Bidirectional, concatenate, Dropout, Concatenate, SpatialDropout1D, \
-    BatchNormalization, Conv1D, GlobalMaxPooling1D, MaxPooling1D, GlobalAveragePooling1D
-from keras.layers import TimeDistributed
-from keras.optimizers import Adam
 from keras.callbacks import EarlyStopping
-import thinc.extra.datasets
+from keras.layers import LSTM, Dense, Embedding, Bidirectional, concatenate, Dropout, SpatialDropout1D, \
+    BatchNormalization, Conv1D, GlobalMaxPooling1D, MaxPooling1D, GlobalAveragePooling1D, Reshape
+from keras.layers import TimeDistributed
+from keras.models import model_from_json
+from keras.optimizers import Adam
+from keras.preprocessing import image
 from spacy.compat import pickle
-import spacy #install
-#tensorflow: install
 
 SPACY_MODEL = 'en_vectors_web_lg'
+
+
+logger = logging.getLogger('corpus')
+logger.setLevel(logging.DEBUG)
+logger_streamhandler = logging.StreamHandler()
+logger_streamhandler.setLevel(logging.INFO)
+logger_streamhandler.setFormatter(logging.Formatter('%(asctime)s %(levelname)s %(message)s'))
+logger.addHandler(logger_streamhandler)
 
 
 def load_model(path, nlp):
@@ -46,6 +55,7 @@ def load_model(path, nlp):
     return model, json.loads(_json)
 
 
+# DEPRECATED
 class SentimentAnalyser(object):
     @classmethod
     def load(cls, path, nlp, max_lengths):
@@ -86,6 +96,7 @@ class SentimentAnalyser(object):
         # doc.user_data['my_data'] = y
 
 
+# DEPRECATED
 def get_labelled_sentences(docs, doc_labels):
     labels = []
     sentences = []
@@ -99,13 +110,11 @@ def get_labelled_sentences(docs, doc_labels):
 def get_features(docs_w_context, max_lengths):
     records_dict = {}
     for i, (doc, c) in enumerate(docs_w_context):
-        #c = contexts[i]
         current_record = records_dict.get(c[0], {})
         current_record[c[1]] = doc
         current_record['label'] = c[2]
         records_dict[c[0]] = current_record
 
-    #docs = list(docs)
     Xs = {}
     for k in max_lengths.keys():
         Xs[k] = np.zeros((len(records_dict), max_lengths[k]), dtype='int32')
@@ -192,7 +201,7 @@ def create_cnn2(input, shape, settings):
 
 def create_inputs_and_embedded(embedding_weights, input_shapes, mask_zero=True):
     keys = sorted(list(input_shapes.keys()))
-    inputs = [Input(shape=(input_shapes[k]['max_length'],), dtype='int32', name=k + '_input') for k in keys]
+    inputs = {k: Input(shape=(input_shapes[k]['max_length'],), dtype='int32', name=k + '_input') for k in keys}
 
     embedding = Embedding(
         input_dim=embedding_weights.shape[0],
@@ -202,11 +211,11 @@ def create_inputs_and_embedded(embedding_weights, input_shapes, mask_zero=True):
         mask_zero=mask_zero
     )
 
-    embedded = [embedding(_in) for _in in inputs]
+    embedded = {k: embedding(inputs[k]) for k in keys}
     return inputs, embedded
 
 
-def create_model(embedding_weights, shapes, setting, create_single=create_lstm):
+def create_model(embedding_weights, shapes, setting, create_single=create_lstm, images_shape=None, images_key=None):
     keys = sorted(list(shapes.keys()))
 
     if create_single == create_lstm:
@@ -216,28 +225,43 @@ def create_model(embedding_weights, shapes, setting, create_single=create_lstm):
     inputs, embedded = create_inputs_and_embedded(embedding_weights=embedding_weights, input_shapes=shapes,
                                                   mask_zero=mask_zero)
 
-    singles = [create_single(input=embedded[i], shape=shapes[k], settings=setting) for i, k in enumerate(keys)]
-    joint = concatenate(singles)
+    singles = {k: create_single(input=embedded[k], shape=shapes[k], settings=setting) for i, k in enumerate(keys)}
+    if images_shape is not None:
+        assert images_key is not None, 'images_shape is give, but images_key is None'
+        input_images = Input(shape=images_shape, dtype='float32', name=images_key+'_input')
+        inputs[images_key] = input_images
+        #out_size = np.prod(np.array(images_shape))
+        # flatten image features
+        input_images = Reshape((-1,))(input_images)
+        input_images = Dense(128, activation='relu')(input_images)
+        input_images = Dropout(setting['dropout'])(input_images)
+        singles[images_key] = input_images
+    joint = concatenate(as_list(singles))
     joint = Dense(512, activation='relu')(joint)
-    joint = Dropout(0.5)(joint)
+    joint = Dropout(setting['dropout'])(joint)
     predictions = Dense(1, activation='sigmoid')(joint)
 
-    model = Model(inputs=inputs, outputs=[predictions])
+    model = Model(inputs=as_list(inputs), outputs=[predictions])
     model.compile(optimizer=Adam(lr=setting['lr']), loss='binary_crossentropy', metrics=['mse'])  # 'accuracy'
     return model
 
 
-def records_to_features(records, nlp, shapes, key_image='postMedia', nb_threads_parse=3, max_entries=1, data_dir=None):
+def records_to_features(records, nlp, shapes, nb_threads_parse=3, max_entries=1, key_image=None, data_dir=None):
+    logger.info("Parsing texts and convert to features...")
     keys_text = sorted([k for k in shapes.keys() if k != key_image])
     train_docs_w_context = nlp.pipe(get_texts(records, keys=keys_text, max_entries=max_entries),
                                     n_threads=nb_threads_parse, as_tuples=True)
     X, labels, ids = get_features(train_docs_w_context, {k: shapes[k]['max_length'] for k in keys_text})
 
     if key_image is not None:
+        logger.info('add image features...')
         assert data_dir is not None, 'key_image is not None, but no data_dir given'
+        ids_mapping = {_id: i for i, _id in enumerate(ids)}
         model = VGG16(weights='imagenet', include_top=False)
+        dummy = np.zeros(shape=(1, 7, 7, 512), dtype=np.float32)
+        X[key_image] = np.zeros(shape=[len(ids)] + list(dummy.shape), dtype=np.float32)
         for record in records:
-            feature_all = []
+            feature_list = [dummy]
             for path in record[key_image]:
 
                 img_path = data_dir / path
@@ -246,8 +270,9 @@ def records_to_features(records, nlp, shapes, key_image='postMedia', nb_threads_
                 x = np.expand_dims(x, axis=0)
                 x = preprocess_input(x)
 
-                features = model.predict(x)
-                feature_all.append(features)
+                current_features = model.predict(x)
+                feature_list.append(current_features)
+            X[key_image][ids_mapping[record['id']]] = np.mean(feature_list, axis=0)
 
     return X, labels
 
@@ -256,7 +281,7 @@ def get_embeddings(vocab):
     return vocab.vectors.data
 
 
-#TODO: adapt for multi-lstm model
+# DEPRECATED
 def evaluate(model_dir, contents, labels, max_length=100):
     def create_pipeline(nlp):
         '''
@@ -281,20 +306,6 @@ def evaluate(model_dir, contents, labels, max_length=100):
         correct += bool(doc.sentiment >= 0.5) == bool(context[-1])
         i += 1
     return float(correct) / i
-
-
-def read_data_dep(data_dir, limit=0):
-    examples = []
-    for subdir, label in (('pos', 1), ('neg', 0)):
-        #for filename in (os.path.join(data_dir, subdir)).iterdir():
-        for filename in (data_dir / subdir).iterdir():
-            with filename.open() as file_:
-                text = file_.read()
-            examples.append((text, label))
-    random.shuffle(examples)
-    if limit >= 1:
-        examples = examples[:limit]
-    return zip(*examples) # Unzips into two lists
 
 
 def read_data(data_dir, limit=0):
@@ -339,7 +350,7 @@ def get_max_lengths_from_config(config):
 
 
 def get_nlp():
-    print("Loading spaCy...")
+    logger.info("Loading spaCy...")
     nlp = spacy.load(SPACY_MODEL)
     nlp.add_pipe(nlp.create_pipe('sentencizer'))
     return nlp
@@ -350,8 +361,8 @@ def get_nlp():
     dev_dir=("Location of development file or directory"),
     model_dir=("Location of output model directory",),
     is_runtime=("Demonstrate run-time usage", "flag", "r", bool),
-    nr_hidden=("Number of hidden units", "option", "H", int),
-    max_length=("Maximum sentence length", "option", "L", int),
+    #nr_hidden=("Number of hidden units", "option", "H", int),
+    #max_length=("Maximum sentence length", "option", "L", int),
     dropout=("Dropout", "option", "d", float),
     learn_rate=("Learn rate", "option", "e", float),
     nb_epoch=("Number of training epochs", "option", "i", int),
@@ -360,35 +371,44 @@ def get_nlp():
     nb_threads_parse=("Number of threads used for parsing", "option", "p", int),
     max_entries=("Maximum number of entries that are considered for multi entry fields (e.g. targetParagraphs)",
                  "option", "x", int),
-    model_type=("one of: lstm, cnn", "option", "m", str)
+    model_type=("one of: lstm, cnn", "option", "m", str),
+    use_images=("use image data", "flag", "g", bool)
 )
 def main(model_dir=None, train_dir=None, dev_dir=None,
          is_runtime=False,
-         nr_hidden=64, max_length=100,  # Shape
+         #nr_hidden=64, max_length=100,  # Shape
          dropout=0.5, learn_rate=0.001,  # General NN config
-         nb_epoch=5, batch_size=100, nr_examples=-1, nb_threads_parse=3, max_entries=-1, model_type='lstm'):  # Training params
+         nb_epoch=5, batch_size=100, nr_examples=-1, nb_threads_parse=3, max_entries=-1, model_type='lstm', use_images=False):  # Training params
+
+    key_image = 'postMedia'
+    if use_images:
+        logger.info('use image data')
     if model_dir is not None:
         model_dir = pathlib.Path(model_dir)
     if train_dir is None or dev_dir is None:
         raise NotImplementedError('dataset fetching not implemented')
         imdb_data = thinc.extra.datasets.imdb()
     if is_runtime:
+        # TODO: implement evaluation with image data
         if dev_dir is None:
             dev_records, _ = zip(*imdb_data[1])
         else:
             dev_records, _ = read_data(pathlib.Path(dev_dir))
         nlp = get_nlp()
-        print("Loading model...")
+        logger.info("Loading model...")
         model, config = load_model(model_dir, nlp)
         shapes = get_max_lengths_from_config(config)
-        print('extract features...')
+
+        use_images = key_image in shapes.keys()
         dev_X, dev_labels = records_to_features(records=dev_records, nlp=nlp, shapes=shapes,
-                                                nb_threads_parse=nb_threads_parse, max_entries=max_entries)
+                                                nb_threads_parse=nb_threads_parse, max_entries=max_entries,
+                                                key_image=key_image if use_images else None,
+                                                data_dir=pathlib.Path(dev_dir))
     else:
         if train_dir is None:
             train_records, _ = zip(*imdb_data[0])
         else:
-            print("Read data")
+            logger.info("Read data")
             train_records, _ = read_data(pathlib.Path(train_dir), limit=nr_examples)
         if dev_dir is None:
             dev_records, _ = zip(*imdb_data[1])
@@ -413,19 +433,19 @@ def main(model_dir=None, train_dir=None, dev_dir=None,
         }
 
         if model_type == 'lstm':
-            print('use lstm model')
+            logger.info('use lstm model')
             shapes = lstm_shapes
             create_single = create_lstm
         elif model_type == 'cnn':
-            print('use cnn model')
+            logger.info('use cnn model')
             shapes = cnn_shapes
             create_single = create_cnn
         elif model_type == 'cnn2':
-            print('use cnn2 model')
+            logger.info('use cnn2 model')
             shapes = cnn_shapes
             create_single = create_cnn2
         elif model_type == 'lstm_stacked':
-            print('use lstm_stacked model')
+            logger.info('use lstm_stacked model')
             shapes = lstm_shapes
             create_single = create_lstm_stacked
         else:
@@ -434,15 +454,18 @@ def main(model_dir=None, train_dir=None, dev_dir=None,
 
         nlp = get_nlp()
 
-        print("Parsing texts and convert to features...")
         train_X, train_labels = records_to_features(records=train_records, nlp=nlp, shapes=lstm_shapes,
-                                                    nb_threads_parse=nb_threads_parse, max_entries=max_entries)
+                                                    nb_threads_parse=nb_threads_parse, max_entries=max_entries,
+                                                    key_image=key_image if use_images else None, data_dir=pathlib.Path(train_dir))
         dev_X, dev_labels = records_to_features(records=dev_records, nlp=nlp, shapes=lstm_shapes,
-                                                nb_threads_parse=nb_threads_parse, max_entries=max_entries)
+                                                nb_threads_parse=nb_threads_parse, max_entries=max_entries,
+                                                key_image=key_image if use_images else None, data_dir=pathlib.Path(dev_dir))
 
         model = create_model(embedding_weights=get_embeddings(nlp.vocab), shapes=shapes,
                              setting={'dropout': dropout, 'lr': learn_rate},
-                             create_single=create_single)
+                             create_single=create_single,
+                             images_shape=train_X[key_image].shape[1:] if use_images else None,
+                             images_key=key_image if use_images else None)
 
         callbacks = [
             EarlyStopping(monitor='val_mean_squared_error', min_delta=1e-4, patience=3, verbose=1),
@@ -462,7 +485,7 @@ def main(model_dir=None, train_dir=None, dev_dir=None,
                 file_.write(model.to_json())
 
     # finally evaluate and write out dev results
-    print('predict...')
+    logger.info('predict...')
     y = model.predict(as_list(dev_X))
     with (model_dir / 'predictions.jsonl').open('w') as file_:
         file_.writelines(json.dumps({'id': record['id'], 'clickbaitScore': float(y[i][0])}) + '\n'
