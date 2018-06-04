@@ -159,11 +159,13 @@ def create_cnn(input, shape, settings):
 
 
 def create_cnn2(input, shape, settings):
-    x = Conv1D(64, 3, activation='relu')(input)
-    x = Conv1D(64, 3, activation='relu')(x)
+    # filters=64, kernel_size=3
+    x = Conv1D(filters=shape['nb_filter'], kernel_size=shape['filter_length'], activation='relu')(input)
+    x = Conv1D(filters=shape['nb_filter'], kernel_size=shape['filter_length'], activation='relu')(x)
     x = MaxPooling1D(3)(x)
-    x = Conv1D(128, 3, activation='relu')(x)
-    x = Conv1D(128, 3, activation='relu')(x)
+    # filters=128, kernel_size=3
+    x = Conv1D(filters=shape['nb_filter'] * 2, kernel_size=shape['filter_length'], activation='relu')(x)
+    x = Conv1D(filters=shape['nb_filter'] * 2, kernel_size=shape['filter_length'], activation='relu')(x)
     x = GlobalAveragePooling1D()(x)
     x = Dropout(settings['dropout'])(x)
     return x
