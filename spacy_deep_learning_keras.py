@@ -274,13 +274,14 @@ def as_list(_dict):
     nr_examples=("Limit to N examples", "option", "n", int),
     nb_threads_parse=("Number of threads used for parsing", "option", "p", int),
     max_entries=("Maximum number of entries that are considered for multi entry fields (e.g. targetParagraphs)",
-                 "option", "m", int)
+                 "option", "x", int),
+    model_type=("one of: lstm, cnn", "option", "m", str)
 )
 def main(model_dir=None, train_dir=None, dev_dir=None,
          is_runtime=False,
-         nr_hidden=64, max_length=100, # Shape
-         dropout=0.5, learn_rate=0.001, # General NN config
-         nb_epoch=5, batch_size=100, nr_examples=-1, nb_threads_parse=3, max_entries=-1):  # Training params
+         nr_hidden=64, max_length=100,  # Shape
+         dropout=0.5, learn_rate=0.001,  # General NN config
+         nb_epoch=5, batch_size=100, nr_examples=-1, nb_threads_parse=3, max_entries=-1, model_type='lstm'):  # Training params
     if model_dir is not None:
         model_dir = pathlib.Path(model_dir)
     if train_dir is None or dev_dir is None:
@@ -312,6 +313,15 @@ def main(model_dir=None, train_dir=None, dev_dir=None,
             'targetDescription': {'max_length': 100, 'nr_hidden': 30}
         }
 
+        # max_length, filter_length, nb_filter
+        cnn_shapes = {
+            'targetParagraphs': {'max_length': 500, 'filter_length': 10, 'nb_filter': 200},
+            'postText': {'max_length': 50, 'filter_length': 3, 'nb_filter': 50},
+            'targetTitle': {'max_length': 50, 'filter_length': 3, 'nb_filter': 50},
+            'targetKeywords': {'max_length': 100, 'filter_length': 5, 'nb_filter': 50},
+            'targetDescription': {'max_length': 100, 'filter_length': 5, 'nb_filter': 50}
+        }
+
         print("Loading spaCy")
         nlp = spacy.load('en_vectors_web_lg')
         nlp.add_pipe(nlp.create_pipe('sentencizer'))
@@ -322,9 +332,19 @@ def main(model_dir=None, train_dir=None, dev_dir=None,
         dev_X, dev_labels = records_to_features(records=dev_records, nlp=nlp, shapes=lstm_shapes,
                                                 nb_threads_parse=nb_threads_parse, max_entries=max_entries)
 
-        model = create_model(embedding_weights=get_embeddings(nlp.vocab), shapes=lstm_shapes,
+        if model_type == 'lstm':
+            print('use lstm model')
+            shapes = lstm_shapes
+            create_single = create_lstm
+        elif model_type == 'cnn':
+            print('use cnn model')
+            shapes = cnn_shapes
+            create_single = create_cnn
+        else:
+            raise ValueError('unknown model_type=%s. use one of: %s' % (model_type, ' '.join(['lstm', 'cnn'])))
+        model = create_model(embedding_weights=get_embeddings(nlp.vocab), shapes=shapes,
                              setting={'dropout': dropout, 'lr': learn_rate},
-                             create_single=create_lstm)
+                             create_single=create_single)
 
         model.fit(as_list(train_X), train_labels,
                   validation_data=(as_list(dev_X), dev_labels),
