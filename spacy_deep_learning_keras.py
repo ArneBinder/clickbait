@@ -19,7 +19,7 @@ import numpy #install
 #keras: install
 from keras import Model
 from keras.models import Sequential, model_from_json
-from keras.layers import LSTM, Dense, Embedding, Bidirectional, merge, Dropout
+from keras.layers import LSTM, Dense, Embedding, Bidirectional, concatenate, Dropout
 from keras.layers import TimeDistributed
 from keras.optimizers import Adam
 import thinc.extra.datasets
@@ -121,34 +121,34 @@ def get_texts(contents, keys=('postText', 'targetTitle', 'targetDescription', 't
             yield (' '.join(values[:max_entries]), (c['id'], k, c.get('label', None)))
 
 
-def train(train_content, dev_content,
-          lstm_shapes, lstm_setting, lstm_optimizer, batch_size=100,
+def train(train_records, dev_records,
+          lstm_shapes, setting, batch_size=100,
           nb_epoch=5, nb_threads_parse=3, max_entries=1):
     print("Loading spaCy")
     nlp = spacy.load('en_vectors_web_lg')
     nlp.add_pipe(nlp.create_pipe('sentencizer'))
     embeddings = get_embeddings(nlp.vocab)
     keys = sorted(list(lstm_shapes.keys()))
-    lstms = [create_lstm(embeddings, lstm_shapes[k], lstm_setting) for k in keys]
 
-    joint = merge([lstm.output for lstm in lstms], mode='concat')
+    lstms = [create_lstm(embeddings, lstm_shapes[k], setting) for k in keys]
+    joint = concatenate([lstm.output for lstm in lstms])
     joint = Dense(512, activation='relu')(joint)
     joint = Dropout(0.5)(joint)
     predictions = Dense(1, activation='sigmoid')(joint)
 
     model = Model(inputs=[lstm.input for lstm in lstms], outputs=[predictions])
-    model.compile(optimizer=Adam(lr=lstm_setting['lr']), loss='binary_crossentropy', metrics=['accuracy'])
+    model.compile(optimizer=Adam(lr=setting['lr']), loss='binary_crossentropy', metrics=['mse']) #'accuracy'
 
     print("Parsing texts...")
-    train_docs_w_context = nlp.pipe(get_texts(train_content, keys=keys, max_entries=max_entries),
+    train_docs_w_context = nlp.pipe(get_texts(train_records, keys=keys, max_entries=max_entries),
                                     n_threads=nb_threads_parse, as_tuples=True)
-    dev_docs_w_context = nlp.pipe(get_texts(dev_content, keys=keys, max_entries=max_entries),
+    dev_docs_w_context = nlp.pipe(get_texts(dev_records, keys=keys, max_entries=max_entries),
                                   n_threads=nb_threads_parse, as_tuples=True)
 
     train_X, train_labels = get_features(train_docs_w_context, {k: lstm_shapes[k]['max_length'] for k in keys})
     dev_X, dev_labels = get_features(dev_docs_w_context, {k: lstm_shapes[k]['max_length'] for k in keys})
     model.fit([train_X[k] for k in keys], train_labels, validation_data=([dev_X[k] for k in keys], dev_labels),
-              nb_epoch=nb_epoch, batch_size=batch_size)
+              epochs=nb_epoch, batch_size=batch_size)
     return model
 
 
@@ -251,7 +251,8 @@ def read_data(data_dir, limit=0):
         for l in file_:
             record = json.loads(l)
             if record['id'] in truth:
-                label = 1 if truth[record['id']]['truthClass'] == 'clickbait' else 0
+                #label = 1 if truth[record['id']]['truthClass'] == 'clickbait' else 0
+                label = truth[record['id']]['truthMean']
             else:
                 label = None
             record['label'] = label
@@ -289,40 +290,39 @@ def main(model_dir=None, train_dir=None, dev_dir=None,
         imdb_data = thinc.extra.datasets.imdb()
     if is_runtime:
         if dev_dir is None:
-            dev_texts, dev_labels = zip(*imdb_data[1])
+            dev_records, dev_labels = zip(*imdb_data[1])
         else:
-            dev_texts, dev_labels = read_data(pathlib.Path(dev_dir))
-        acc = evaluate(model_dir, dev_texts, dev_labels, max_length=max_length)
+            dev_records, dev_labels = read_data(pathlib.Path(dev_dir))
+        acc = evaluate(model_dir, dev_records, dev_labels, max_length=max_length)
         print(acc)
     else:
         if train_dir is None:
-            train_texts, train_labels = zip(*imdb_data[0])
+            train_records, train_labels = zip(*imdb_data[0])
         else:
             print("Read data")
-            train_texts, train_labels = read_data(pathlib.Path(train_dir), limit=nr_examples)
+            train_records, train_labels = read_data(pathlib.Path(train_dir), limit=nr_examples)
         if dev_dir is None:
-            dev_texts, dev_labels = zip(*imdb_data[1])
+            dev_records, dev_labels = zip(*imdb_data[1])
         else:
-            dev_texts, dev_labels = read_data(pathlib.Path(dev_dir), limit=nr_examples)
+            dev_records, dev_labels = read_data(pathlib.Path(dev_dir), limit=nr_examples)
         lstm_shapes = {
-            'targetParagraphs': {'max_length': 1000, 'nr_hidden': 300},
+            'targetParagraphs': {'max_length': 500, 'nr_hidden': 64},
             'postText': {'max_length': 50, 'nr_hidden': 30},
             'targetTitle': {'max_length': 50, 'nr_hidden': 30},
-            'targetKeywords': {'max_length': 100, 'nr_hidden': 64},
-            'targetDescription': {'max_length': 100, 'nr_hidden': 64}
+            'targetKeywords': {'max_length': 100, 'nr_hidden': 30},
+            'targetDescription': {'max_length': 100, 'nr_hidden': 30}
         }
-        lstm = train(train_texts, dev_texts,
-                     lstm_shapes,
-                     {'dropout': dropout, 'lr': learn_rate},
-                     {},
-                     nb_epoch=nb_epoch, batch_size=batch_size, nb_threads_parse=nb_threads_parse,
-                     max_entries=999)
-        weights = lstm.get_weights()
+        model = train(train_records, dev_records,
+                      lstm_shapes=lstm_shapes,
+                      setting={'dropout': dropout, 'lr': learn_rate},
+                      nb_epoch=nb_epoch, batch_size=batch_size, nb_threads_parse=nb_threads_parse,
+                      max_entries=999)
+        weights = model.get_weights()
         if model_dir is not None:
             with (model_dir / 'model').open('wb') as file_:
                 pickle.dump(weights[1:], file_)
             with (model_dir / 'config.json').open('w') as file_:
-                file_.write(lstm.to_json())
+                file_.write(model.to_json())
 
 
 if __name__ == '__main__':
