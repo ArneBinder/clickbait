@@ -15,9 +15,12 @@ import plac #install
 import random
 import pathlib
 import cytoolz #install
-import numpy #install
+import numpy as np #install
 #keras: install
 from keras import Model, Input
+from keras.applications.vgg16 import VGG16
+from keras.preprocessing import image
+from keras.applications.vgg16 import preprocess_input
 from keras.models import Sequential, model_from_json
 from keras.layers import LSTM, Dense, Embedding, Bidirectional, concatenate, Dropout, Concatenate, SpatialDropout1D, \
     BatchNormalization, Conv1D, GlobalMaxPooling1D, MaxPooling1D, GlobalAveragePooling1D
@@ -28,6 +31,19 @@ import thinc.extra.datasets
 from spacy.compat import pickle
 import spacy #install
 #tensorflow: install
+
+SPACY_MODEL = 'en_vectors_web_lg'
+
+
+def load_model(path, nlp):
+    with (path / 'config.json').open() as file_:
+        _json = file_.read()
+        model = model_from_json(_json)
+    with (path / 'model').open('rb') as file_:
+        lstm_weights = pickle.load(file_)
+    embeddings = get_embeddings(nlp.vocab)
+    model.set_weights([embeddings] + lstm_weights)
+    return model, json.loads(_json)
 
 
 class SentimentAnalyser(object):
@@ -77,7 +93,7 @@ def get_labelled_sentences(docs, doc_labels):
         for sent in doc.sents:
             sentences.append(sent)
             labels.append(y)
-    return sentences, numpy.asarray(labels, dtype='int32')
+    return sentences, np.asarray(labels, dtype='int32')
 
 
 def get_features(docs_w_context, max_lengths):
@@ -92,11 +108,14 @@ def get_features(docs_w_context, max_lengths):
     #docs = list(docs)
     Xs = {}
     for k in max_lengths.keys():
-        Xs[k] = numpy.zeros((len(records_dict), max_lengths[k]), dtype='int32')
+        Xs[k] = np.zeros((len(records_dict), max_lengths[k]), dtype='int32')
 
     labels = []
-    for i, docs in enumerate(records_dict.values()):
+    ids = []
+    for i, _id in enumerate(records_dict.keys()):
+        docs = records_dict[_id]
         labels.append(docs['label'])
+        ids.append(_id)
         for k in max_lengths.keys():
             j = 0
             for token in docs[k]:
@@ -108,7 +127,7 @@ def get_features(docs_w_context, max_lengths):
                 j += 1
                 if j >= max_lengths[k]:
                     break
-    return Xs, labels
+    return Xs, labels, ids
 
 
 def get_texts(contents, keys=('postText', 'targetTitle', 'targetDescription', 'targetKeywords', 'targetParagraphs',
@@ -208,11 +227,28 @@ def create_model(embedding_weights, shapes, setting, create_single=create_lstm):
     return model
 
 
-def records_to_features(records, nlp, shapes, nb_threads_parse=3, max_entries=1):
-    keys = sorted(list(shapes.keys()))
-    train_docs_w_context = nlp.pipe(get_texts(records, keys=keys, max_entries=max_entries),
+def records_to_features(records, nlp, shapes, key_image='postMedia', nb_threads_parse=3, max_entries=1, data_dir=None):
+    keys_text = sorted([k for k in shapes.keys() if k != key_image])
+    train_docs_w_context = nlp.pipe(get_texts(records, keys=keys_text, max_entries=max_entries),
                                     n_threads=nb_threads_parse, as_tuples=True)
-    X, labels = get_features(train_docs_w_context, {k: shapes[k]['max_length'] for k in keys})
+    X, labels, ids = get_features(train_docs_w_context, {k: shapes[k]['max_length'] for k in keys_text})
+
+    if key_image is not None:
+        assert data_dir is not None, 'key_image is not None, but no data_dir given'
+        model = VGG16(weights='imagenet', include_top=False)
+        for record in records:
+            feature_all = []
+            for path in record[key_image]:
+
+                img_path = data_dir / path
+                img = image.load_img(img_path, target_size=(224, 224))
+                x = image.img_to_array(img)
+                x = np.expand_dims(x, axis=0)
+                x = preprocess_input(x)
+
+                features = model.predict(x)
+                feature_all.append(features)
+
     return X, labels
 
 
@@ -292,6 +328,23 @@ def as_list(_dict):
     return [_dict[k] for k in sorted(list(_dict.keys()))]
 
 
+def get_max_lengths_from_config(config):
+    res = {}
+    layers = config['config']['layers']
+    for l in layers:
+        n = l['name']
+        if n.endswith('_input'):
+            res[n[:-len('_input')]] = {'max_length': l['config']['batch_input_shape'][-1]}
+    return res
+
+
+def get_nlp():
+    print("Loading spaCy...")
+    nlp = spacy.load(SPACY_MODEL)
+    nlp.add_pipe(nlp.create_pipe('sentencizer'))
+    return nlp
+
+
 @plac.annotations(
     train_dir=("Location of training file or directory"),
     dev_dir=("Location of development file or directory"),
@@ -324,8 +377,13 @@ def main(model_dir=None, train_dir=None, dev_dir=None,
             dev_records, _ = zip(*imdb_data[1])
         else:
             dev_records, _ = read_data(pathlib.Path(dev_dir))
-        acc = evaluate(model_dir, dev_records, dev_labels, max_length=max_length)
-        print(acc)
+        nlp = get_nlp()
+        print("Loading model...")
+        model, config = load_model(model_dir, nlp)
+        shapes = get_max_lengths_from_config(config)
+        print('extract features...')
+        dev_X, dev_labels = records_to_features(records=dev_records, nlp=nlp, shapes=shapes,
+                                                nb_threads_parse=nb_threads_parse, max_entries=max_entries)
     else:
         if train_dir is None:
             train_records, _ = zip(*imdb_data[0])
@@ -333,9 +391,9 @@ def main(model_dir=None, train_dir=None, dev_dir=None,
             print("Read data")
             train_records, _ = read_data(pathlib.Path(train_dir), limit=nr_examples)
         if dev_dir is None:
-            dev_records, dev_labels = zip(*imdb_data[1])
+            dev_records, _ = zip(*imdb_data[1])
         else:
-            dev_records, dev_labels = read_data(pathlib.Path(dev_dir), limit=nr_examples)
+            dev_records, _ = read_data(pathlib.Path(dev_dir), limit=nr_examples)
 
         lstm_shapes = {
             'targetParagraphs': {'max_length': 500, 'nr_hidden': 64},
@@ -353,16 +411,6 @@ def main(model_dir=None, train_dir=None, dev_dir=None,
             'targetKeywords': {'max_length': 100, 'filter_length': 1, 'nb_filter': 50},
             'targetDescription': {'max_length': 100, 'filter_length': 5, 'nb_filter': 50}
         }
-
-        print("Loading spaCy")
-        nlp = spacy.load('en_vectors_web_lg')
-        nlp.add_pipe(nlp.create_pipe('sentencizer'))
-
-        print("Parsing texts and convert to features...")
-        train_X, train_labels = records_to_features(records=train_records, nlp=nlp, shapes=lstm_shapes,
-                                                    nb_threads_parse=nb_threads_parse, max_entries=max_entries)
-        dev_X, dev_labels = records_to_features(records=dev_records, nlp=nlp, shapes=lstm_shapes,
-                                                nb_threads_parse=nb_threads_parse, max_entries=max_entries)
 
         if model_type == 'lstm':
             print('use lstm model')
@@ -383,6 +431,15 @@ def main(model_dir=None, train_dir=None, dev_dir=None,
         else:
             raise ValueError('unknown model_type=%s. use one of: %s'
                              % (model_type, ' '.join(['lstm', 'cnn', 'cnn2', 'lstm_stacked'])))
+
+        nlp = get_nlp()
+
+        print("Parsing texts and convert to features...")
+        train_X, train_labels = records_to_features(records=train_records, nlp=nlp, shapes=lstm_shapes,
+                                                    nb_threads_parse=nb_threads_parse, max_entries=max_entries)
+        dev_X, dev_labels = records_to_features(records=dev_records, nlp=nlp, shapes=lstm_shapes,
+                                                nb_threads_parse=nb_threads_parse, max_entries=max_entries)
+
         model = create_model(embedding_weights=get_embeddings(nlp.vocab), shapes=shapes,
                              setting={'dropout': dropout, 'lr': learn_rate},
                              create_single=create_single)
@@ -397,18 +454,19 @@ def main(model_dir=None, train_dir=None, dev_dir=None,
                   validation_data=(as_list(dev_X), dev_labels),
                   epochs=nb_epoch, batch_size=batch_size, callbacks=callbacks)
 
-        # finally evaluate and write out dev results
-        y = model.predict(as_list(dev_X))
-        with (model_dir / 'predictions.jsonl').open('w') as file_:
-            file_.writelines(json.dumps({'id': record['id'], 'clickbaitScore': float(y[i][0])}) + '\n'
-                             for i, record in enumerate(dev_records))
-
         weights = model.get_weights()
         if model_dir is not None:
             with (model_dir / 'model').open('wb') as file_:
                 pickle.dump(weights[1:], file_)
             with (model_dir / 'config.json').open('w') as file_:
                 file_.write(model.to_json())
+
+    # finally evaluate and write out dev results
+    print('predict...')
+    y = model.predict(as_list(dev_X))
+    with (model_dir / 'predictions.jsonl').open('w') as file_:
+        file_.writelines(json.dumps({'id': record['id'], 'clickbaitScore': float(y[i][0])}) + '\n'
+                         for i, record in enumerate(dev_records))
 
 
 if __name__ == '__main__':
