@@ -19,7 +19,8 @@ import numpy #install
 #keras: install
 from keras import Model, Input
 from keras.models import Sequential, model_from_json
-from keras.layers import LSTM, Dense, Embedding, Bidirectional, concatenate, Dropout, Concatenate
+from keras.layers import LSTM, Dense, Embedding, Bidirectional, concatenate, Dropout, Concatenate, SpatialDropout1D, \
+    BatchNormalization, Conv1D, GlobalMaxPooling1D
 from keras.layers import TimeDistributed
 from keras.optimizers import Adam
 import thinc.extra.datasets
@@ -124,26 +125,62 @@ def get_texts(contents, keys=('postText', 'targetTitle', 'targetDescription', 't
 
 
 def create_lstm(input, shape, settings):
-    a = TimeDistributed(Dense(shape['nr_hidden'], use_bias=False))(input)
-    b = Bidirectional(LSTM(shape['nr_hidden'], recurrent_dropout=settings['dropout'], dropout=settings['dropout']))(a)
-    return b
+    x = TimeDistributed(Dense(shape['nr_hidden'], use_bias=False))(input)
+    x = Bidirectional(LSTM(shape['nr_hidden'], recurrent_dropout=settings['dropout'], dropout=settings['dropout']))(x)
+    return x
 
 
-def create_model(embeddings, lstm_shapes, setting):
-    keys = sorted(list(lstm_shapes.keys()))
-    inputs = [Input(shape=(lstm_shapes[k]['max_length'],), dtype='int32', name=k + '_input') for k in keys]
+def create_cnn(input, shape, settings):
+    x = SpatialDropout1D(rate=settings['dropout'])(input)
+    x = BatchNormalization()(x)
+    x = Dropout(settings['dropout'])(x)
+    x = Conv1D(filters=shape['nb_filter'], kernel_size=shape['filter_length'], padding='valid', activation='relu',
+               strides=1)(x)
+    x = SpatialDropout1D(rate=settings['dropout'])(x)
+    x = BatchNormalization()(x)
+    x = Dropout(settings['dropout'])(x)
+    x = GlobalMaxPooling1D()(x)
+    x = BatchNormalization()(x)
+    x = Dropout(settings['dropout'])(x)
+    return x
+
+
+def create_inputs_and_embedded(embedding_weights, input_shapes):
+    keys = sorted(list(input_shapes.keys()))
+    inputs = [Input(shape=(input_shapes[k]['max_length'],), dtype='int32', name=k + '_input') for k in keys]
 
     embedding = Embedding(
-        input_dim=embeddings.shape[0],
-        output_dim=embeddings.shape[1],
+        input_dim=embedding_weights.shape[0],
+        output_dim=embedding_weights.shape[1],
         trainable=False,
-        weights=[embeddings],
+        weights=[embedding_weights],
         mask_zero=True
     )
 
     embedded = [embedding(_in) for _in in inputs]
+    return inputs, embedded
 
-    lstms = [create_lstm(input=embedded[i], shape=lstm_shapes[k], settings=setting) for i, k in enumerate(keys)]
+
+def create_model_lstm(embedding_weights, shapes, setting):
+    keys = sorted(list(shapes.keys()))
+    inputs, embedded = create_inputs_and_embedded(embedding_weights=embedding_weights, input_shapes=shapes)
+
+    lstms = [create_lstm(input=embedded[i], shape=shapes[k], settings=setting) for i, k in enumerate(keys)]
+    joint = concatenate(lstms)
+    joint = Dense(512, activation='relu')(joint)
+    joint = Dropout(0.5)(joint)
+    predictions = Dense(1, activation='sigmoid')(joint)
+
+    model = Model(inputs=inputs, outputs=[predictions])
+    model.compile(optimizer=Adam(lr=setting['lr']), loss='binary_crossentropy', metrics=['mse'])  # 'accuracy'
+    return model
+
+
+def create_model_cnn(embedding_weights, shapes, setting):
+    keys = sorted(list(shapes.keys()))
+    inputs, embedded = create_inputs_and_embedded(embedding_weights=embedding_weights, input_shapes=shapes)
+
+    lstms = [create_lstm(input=embedded[i], shape=shapes[k], settings=setting) for i, k in enumerate(keys)]
     joint = concatenate(lstms)
     joint = Dense(512, activation='relu')(joint)
     joint = Dropout(0.5)(joint)
@@ -160,16 +197,6 @@ def records_to_features(records, nlp, lstm_shapes, nb_threads_parse=3, max_entri
                                     n_threads=nb_threads_parse, as_tuples=True)
     X, labels = get_features(train_docs_w_context, {k: lstm_shapes[k]['max_length'] for k in keys})
     return X, labels
-
-
-def train(train_features, train_labels, dev_features, dev_labels, embeddings,
-          lstm_shapes, setting, batch_size=100,
-          nb_epoch=5):
-    keys = sorted(list(lstm_shapes.keys()))
-    model = create_model(embeddings=embeddings, lstm_shapes=lstm_shapes, setting=setting)
-    model.fit([train_features[k] for k in keys], train_labels, validation_data=([dev_features[k] for k in keys], dev_labels),
-              epochs=nb_epoch, batch_size=batch_size)
-    return model
 
 
 def get_embeddings(vocab):
@@ -286,13 +313,6 @@ def main(model_dir=None, train_dir=None, dev_dir=None,
             dev_records, dev_labels = zip(*imdb_data[1])
         else:
             dev_records, dev_labels = read_data(pathlib.Path(dev_dir), limit=nr_examples)
-        lstm_shapes = {
-            'targetParagraphs': {'max_length': 500, 'nr_hidden': 64},
-            'postText': {'max_length': 50, 'nr_hidden': 30},
-            'targetTitle': {'max_length': 50, 'nr_hidden': 30},
-            'targetKeywords': {'max_length': 100, 'nr_hidden': 30},
-            'targetDescription': {'max_length': 100, 'nr_hidden': 30}
-        }
 
         print("Loading spaCy")
         nlp = spacy.load('en_vectors_web_lg')
@@ -304,11 +324,18 @@ def main(model_dir=None, train_dir=None, dev_dir=None,
         dev_X, dev_labels = records_to_features(records=dev_records, nlp=nlp, lstm_shapes=lstm_shapes,
                                                 nb_threads_parse=nb_threads_parse, max_entries=max_entries)
 
-        model = train(train_X, train_labels, dev_X, dev_labels,
-                      embeddings=get_embeddings(nlp.vocab),
-                      lstm_shapes=lstm_shapes,
-                      setting={'dropout': dropout, 'lr': learn_rate},
-                      nb_epoch=nb_epoch, batch_size=batch_size)
+        lstm_shapes = {
+            'targetParagraphs': {'max_length': 500, 'nr_hidden': 64},
+            'postText': {'max_length': 50, 'nr_hidden': 30},
+            'targetTitle': {'max_length': 50, 'nr_hidden': 30},
+            'targetKeywords': {'max_length': 100, 'nr_hidden': 30},
+            'targetDescription': {'max_length': 100, 'nr_hidden': 30}
+        }
+        model = create_model_lstm(embedding_weights=embeddings, shapes=lstm_shapes, setting=setting)
+
+        model.fit([train_features[k] for k in keys], train_labels,
+                  validation_data=([dev_features[k] for k in keys], dev_labels),
+                  epochs=nb_epoch, batch_size=batch_size)
 
         # finally evaluate and write out dev results
         y = model.predict([dev_X[k] for k in sorted(list(lstm_shapes.keys()))])
