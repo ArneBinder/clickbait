@@ -161,12 +161,12 @@ def create_inputs_and_embedded(embedding_weights, input_shapes):
     return inputs, embedded
 
 
-def create_model_lstm(embedding_weights, shapes, setting):
+def create_model(embedding_weights, shapes, setting, create_single=create_lstm):
     keys = sorted(list(shapes.keys()))
     inputs, embedded = create_inputs_and_embedded(embedding_weights=embedding_weights, input_shapes=shapes)
 
-    lstms = [create_lstm(input=embedded[i], shape=shapes[k], settings=setting) for i, k in enumerate(keys)]
-    joint = concatenate(lstms)
+    single = [create_single(input=embedded[i], shape=shapes[k], settings=setting) for i, k in enumerate(keys)]
+    joint = concatenate(single)
     joint = Dense(512, activation='relu')(joint)
     joint = Dropout(0.5)(joint)
     predictions = Dense(1, activation='sigmoid')(joint)
@@ -176,26 +176,11 @@ def create_model_lstm(embedding_weights, shapes, setting):
     return model
 
 
-def create_model_cnn(embedding_weights, shapes, setting):
+def records_to_features(records, nlp, shapes, nb_threads_parse=3, max_entries=1):
     keys = sorted(list(shapes.keys()))
-    inputs, embedded = create_inputs_and_embedded(embedding_weights=embedding_weights, input_shapes=shapes)
-
-    lstms = [create_lstm(input=embedded[i], shape=shapes[k], settings=setting) for i, k in enumerate(keys)]
-    joint = concatenate(lstms)
-    joint = Dense(512, activation='relu')(joint)
-    joint = Dropout(0.5)(joint)
-    predictions = Dense(1, activation='sigmoid')(joint)
-
-    model = Model(inputs=inputs, outputs=[predictions])
-    model.compile(optimizer=Adam(lr=setting['lr']), loss='binary_crossentropy', metrics=['mse'])  # 'accuracy'
-    return model
-
-
-def records_to_features(records, nlp, lstm_shapes, nb_threads_parse=3, max_entries=1):
-    keys = sorted(list(lstm_shapes.keys()))
     train_docs_w_context = nlp.pipe(get_texts(records, keys=keys, max_entries=max_entries),
                                     n_threads=nb_threads_parse, as_tuples=True)
-    X, labels = get_features(train_docs_w_context, {k: lstm_shapes[k]['max_length'] for k in keys})
+    X, labels = get_features(train_docs_w_context, {k: shapes[k]['max_length'] for k in keys})
     return X, labels
 
 
@@ -271,6 +256,10 @@ def read_data(data_dir, limit=0):
     return zip(*examples) # Unzips into two lists
 
 
+def as_list(_dict):
+    return [_dict[k] for k in sorted(list(_dict.keys()))]
+
+
 @plac.annotations(
     train_dir=("Location of training file or directory"),
     dev_dir=("Location of development file or directory"),
@@ -284,7 +273,8 @@ def read_data(data_dir, limit=0):
     batch_size=("Size of minibatches for training LSTM", "option", "b", int),
     nr_examples=("Limit to N examples", "option", "n", int),
     nb_threads_parse=("Number of threads used for parsing", "option", "p", int),
-    max_entries=("Maximum number of entries that are considered for multi entry fields (e.g. targetParagraphs)", "option", "m", int)
+    max_entries=("Maximum number of entries that are considered for multi entry fields (e.g. targetParagraphs)",
+                 "option", "m", int)
 )
 def main(model_dir=None, train_dir=None, dev_dir=None,
          is_runtime=False,
@@ -314,16 +304,6 @@ def main(model_dir=None, train_dir=None, dev_dir=None,
         else:
             dev_records, dev_labels = read_data(pathlib.Path(dev_dir), limit=nr_examples)
 
-        print("Loading spaCy")
-        nlp = spacy.load('en_vectors_web_lg')
-        nlp.add_pipe(nlp.create_pipe('sentencizer'))
-
-        print("Parsing texts and convert to features...")
-        train_X, train_labels = records_to_features(records=train_records, nlp=nlp, lstm_shapes=lstm_shapes,
-                                                    nb_threads_parse=nb_threads_parse, max_entries=max_entries)
-        dev_X, dev_labels = records_to_features(records=dev_records, nlp=nlp, lstm_shapes=lstm_shapes,
-                                                nb_threads_parse=nb_threads_parse, max_entries=max_entries)
-
         lstm_shapes = {
             'targetParagraphs': {'max_length': 500, 'nr_hidden': 64},
             'postText': {'max_length': 50, 'nr_hidden': 30},
@@ -331,16 +311,30 @@ def main(model_dir=None, train_dir=None, dev_dir=None,
             'targetKeywords': {'max_length': 100, 'nr_hidden': 30},
             'targetDescription': {'max_length': 100, 'nr_hidden': 30}
         }
-        model = create_model_lstm(embedding_weights=embeddings, shapes=lstm_shapes, setting=setting)
 
-        model.fit([train_features[k] for k in keys], train_labels,
-                  validation_data=([dev_features[k] for k in keys], dev_labels),
+        print("Loading spaCy")
+        nlp = spacy.load('en_vectors_web_lg')
+        nlp.add_pipe(nlp.create_pipe('sentencizer'))
+
+        print("Parsing texts and convert to features...")
+        train_X, train_labels = records_to_features(records=train_records, nlp=nlp, shapes=lstm_shapes,
+                                                    nb_threads_parse=nb_threads_parse, max_entries=max_entries)
+        dev_X, dev_labels = records_to_features(records=dev_records, nlp=nlp, shapes=lstm_shapes,
+                                                nb_threads_parse=nb_threads_parse, max_entries=max_entries)
+
+        model = create_model(embedding_weights=get_embeddings(nlp.vocab), shapes=lstm_shapes,
+                             setting={'dropout': dropout, 'lr': learn_rate},
+                             create_single=create_lstm)
+
+        model.fit(as_list(train_X), train_labels,
+                  validation_data=(as_list(dev_X), dev_labels),
                   epochs=nb_epoch, batch_size=batch_size)
 
         # finally evaluate and write out dev results
-        y = model.predict([dev_X[k] for k in sorted(list(lstm_shapes.keys()))])
+        y = model.predict(as_list(dev_X))
         with (model_dir / 'predictions.jsonl').open('w') as file_:
-            file_.writelines(json.dumps({'id': record['id'], 'clickbaitScore': str(y[i][0])}) + '\n' for i, record in enumerate(dev_records))
+            file_.writelines(json.dumps({'id': record['id'], 'clickbaitScore': str(y[i][0])}) + '\n'
+                             for i, record in enumerate(dev_records))
 
         weights = model.get_weights()
         if model_dir is not None:
