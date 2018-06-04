@@ -376,10 +376,11 @@ def main(model_dir=None, train_dir=None, dev_dir=None,
             create_single = create_cnn2
         elif model_type == 'lstm_stacked':
             print('use lstm_stacked model')
-            shapes = cnn_shapes
+            shapes = lstm_shapes
             create_single = create_lstm_stacked
         else:
-            raise ValueError('unknown model_type=%s. use one of: %s' % (model_type, ' '.join(['lstm', 'cnn'])))
+            raise ValueError('unknown model_type=%s. use one of: %s'
+                             % (model_type, ' '.join(['lstm', 'cnn', 'cnn2', 'lstm_stacked'])))
         model = create_model(embedding_weights=get_embeddings(nlp.vocab), shapes=shapes,
                              setting={'dropout': dropout, 'lr': learn_rate},
                              create_single=create_single)
