@@ -257,6 +257,7 @@ def records_to_features(records, nlp, shapes, nb_threads_parse=3, max_entries=1,
         logger.info('add image features...')
         assert data_dir is not None, 'key_image is not None, but no data_dir given'
         ids_mapping = {_id: i for i, _id in enumerate(ids)}
+        # TODO: try other image models (see https://keras.io/applications/), e.g. InceptionResNetV2
         model = VGG16(weights='imagenet', include_top=False)
         dummy = np.zeros(shape=(1, 7, 7, 512), dtype=np.float32)
         X[key_image] = np.zeros(shape=[len(ids)] + list(dummy.shape), dtype=np.float32)
@@ -272,7 +273,7 @@ def records_to_features(records, nlp, shapes, nb_threads_parse=3, max_entries=1,
 
                 current_features = model.predict(x)
                 feature_list.append(current_features)
-            X[key_image][ids_mapping[record['id']]] = np.mean(feature_list, axis=0)
+            X[key_image][ids_mapping[record['id']]] = np.sum(feature_list, axis=0)
 
     return X, labels
 
