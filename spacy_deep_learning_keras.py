@@ -256,24 +256,58 @@ def records_to_features(records, nlp, shapes, nb_threads_parse=3, max_entries=1,
     if key_image is not None:
         logger.info('add image features...')
         assert data_dir is not None, 'key_image is not None, but no data_dir given'
+
         ids_mapping = {_id: i for i, _id in enumerate(ids)}
         # TODO: try other image models (see https://keras.io/applications/), e.g. InceptionResNetV2
         model = VGG16(weights='imagenet', include_top=False)
         dummy = np.zeros(shape=(1, 7, 7, 512), dtype=np.float32)
         X[key_image] = np.zeros(shape=[len(ids)] + list(dummy.shape), dtype=np.float32)
+
+        fn_images_embeddings = data_dir / 'images.embedded.npy'
+        fn_images_ids = data_dir / 'images.ids.npy'
+        new_images_ids = []
+        if fn_images_ids.exists():
+            logger.info('load pre-calculated image embeddings')
+            assert fn_images_embeddings.exists(), 'found images_ids file, but not images_embeddings file'
+            images_ids = np.load(fn_images_ids)
+            images_embeddings = np.load(fn_images_embeddings)
+            images_ids_mapping = {_id: i for i, _id in enumerate(images_ids)}
+        else:
+            images_ids = []
+            images_embeddings = None
+
+        logger.info('embed images...')
         for record in records:
-            feature_list = [dummy]
-            for path in record[key_image]:
+            if record['id'] in images_ids:
+                X[key_image][ids_mapping[record['id']]] = images_embeddings[images_ids_mapping[record['id']]]
+            else:
+                feature_list = [dummy]
+                for path in record[key_image]:
 
-                img_path = data_dir / path
-                img = image.load_img(img_path, target_size=(224, 224))
-                x = image.img_to_array(img)
-                x = np.expand_dims(x, axis=0)
-                x = preprocess_input(x)
+                    img_path = data_dir / path
+                    img = image.load_img(img_path, target_size=(224, 224))
+                    x = image.img_to_array(img)
+                    x = np.expand_dims(x, axis=0)
+                    x = preprocess_input(x)
 
-                current_features = model.predict(x)
-                feature_list.append(current_features)
-            X[key_image][ids_mapping[record['id']]] = np.sum(feature_list, axis=0)
+                    current_features = model.predict(x)
+                    feature_list.append(current_features)
+                X[key_image][ids_mapping[record['id']]] = np.sum(feature_list, axis=0)
+                new_images_ids.append(record['id'])
+
+        new_images_embeddings = X[key_image][np.array([ids_mapping[new_id] for new_id in new_images_ids])]
+        logger.info('calculated %i new image embeddings' % len(new_images_ids))
+        if images_embeddings is not None:
+            images_embeddings = np.concatenate((images_embeddings, new_images_embeddings), axis=0)
+            images_ids = np.concatenate((images_ids, np.array(new_images_ids, dtype=int)))
+        else:
+            images_embeddings = new_images_embeddings
+            images_ids = np.array(new_images_ids, dtype=int)
+
+        logger.info('save calculated image embeddings...')
+        np.save(fn_images_embeddings, images_embeddings)
+
+        np.save(fn_images_ids, images_ids)
 
     return X, labels
 
@@ -309,19 +343,21 @@ def evaluate(model_dir, contents, labels, max_length=100):
     return float(correct) / i
 
 
-def read_data(data_dir, limit=0):
+def read_data(data_dir, limit=0, dont_shuffle=False):
 
     truth = {}
     if (data_dir / 'truth.jsonl').exists():
         with (data_dir / 'truth.jsonl').open() as file_:
             for l in file_:
                 record = json.loads(l)
-                truth[record['id']] = record
+                record['id'] = int(record['id'])
+                truth[int(record['id'])] = record
 
     examples = []
     with (data_dir / 'instances.jsonl').open() as file_:
         for l in file_:
             record = json.loads(l)
+            record['id'] = int(record['id'])
             if record['id'] in truth:
                 #label = 1 if truth[record['id']]['truthClass'] == 'clickbait' else 0
                 label = truth[record['id']]['truthMean']
@@ -330,7 +366,8 @@ def read_data(data_dir, limit=0):
             record['label'] = label
             examples.append((record, label))
 
-    random.shuffle(examples)
+    if not dont_shuffle:
+        random.shuffle(examples)
     if limit >= 1:
         examples = examples[:limit]
     return zip(*examples) # Unzips into two lists
@@ -410,11 +447,11 @@ def main(model_dir=None, train_dir=None, dev_dir=None,
             train_records, _ = zip(*imdb_data[0])
         else:
             logger.info("Read data")
-            train_records, _ = read_data(pathlib.Path(train_dir), limit=nr_examples)
+            train_records, _ = read_data(pathlib.Path(train_dir), limit=nr_examples, dont_shuffle=True)
         if dev_dir is None:
             dev_records, _ = zip(*imdb_data[1])
         else:
-            dev_records, _ = read_data(pathlib.Path(dev_dir), limit=nr_examples)
+            dev_records, _ = read_data(pathlib.Path(dev_dir), limit=nr_examples, dont_shuffle=True)
 
         lstm_shapes = {
             'targetParagraphs': {'max_length': 500, 'nr_hidden': 64},
