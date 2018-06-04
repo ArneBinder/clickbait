@@ -17,9 +17,9 @@ import pathlib
 import cytoolz #install
 import numpy #install
 #keras: install
-from keras import Model
+from keras import Model, Input
 from keras.models import Sequential, model_from_json
-from keras.layers import LSTM, Dense, Embedding, Bidirectional, concatenate, Dropout
+from keras.layers import LSTM, Dense, Embedding, Bidirectional, concatenate, Dropout, Concatenate
 from keras.layers import TimeDistributed
 from keras.optimizers import Adam
 import thinc.extra.datasets
@@ -30,21 +30,21 @@ import spacy #install
 
 class SentimentAnalyser(object):
     @classmethod
-    def load(cls, path, nlp, max_length=100):
+    def load(cls, path, nlp, max_lengths):
         with (path / 'config.json').open() as file_:
             model = model_from_json(file_.read())
         with (path / 'model').open('rb') as file_:
             lstm_weights = pickle.load(file_)
         embeddings = get_embeddings(nlp.vocab)
         model.set_weights([embeddings] + lstm_weights)
-        return cls(model, max_length=max_length)
+        return cls(model, max_lengths=max_lengths)
 
-    def __init__(self, model, max_length=100):
+    def __init__(self, model, max_lengths):
         self._model = model
-        self.max_length = max_length
+        self.max_lengths = max_lengths
 
     def __call__(self, doc):
-        X = get_features([doc], self.max_length)
+        X = get_features([doc], self.max_lengths)
         y = self._model.predict(X)
         self.set_sentiment(doc, y)
 
@@ -54,7 +54,7 @@ class SentimentAnalyser(object):
             sentences = []
             for doc in minibatch:
                 sentences.extend(doc.sents)
-            Xs = get_features(sentences, self.max_length)
+            Xs = get_features(sentences, self.max_lengths)
             ys = self._model.predict(Xs)
             for sent, label in zip(sentences, ys):
                 sent.doc.sentiment += label - 0.5
@@ -110,7 +110,9 @@ def get_features(docs_w_context, max_lengths):
 
 
 def get_texts(contents, keys=('postText', 'targetTitle', 'targetDescription', 'targetKeywords', 'targetParagraphs',
-                              'targetCaptions'), max_entries=1):
+                              'targetCaptions'), max_entries=-1):
+    if max_entries < 0:
+        max_entries = 999999
     for i, c in enumerate(contents):
         for k in keys:
             values = c.get(k, None)
@@ -121,74 +123,52 @@ def get_texts(contents, keys=('postText', 'targetTitle', 'targetDescription', 't
             yield (' '.join(values[:max_entries]), (c['id'], k, c.get('label', None)))
 
 
-def train(train_records, dev_records,
-          lstm_shapes, setting, batch_size=100,
-          nb_epoch=5, nb_threads_parse=3, max_entries=1):
-    print("Loading spaCy")
-    nlp = spacy.load('en_vectors_web_lg')
-    nlp.add_pipe(nlp.create_pipe('sentencizer'))
-    embeddings = get_embeddings(nlp.vocab)
-    keys = sorted(list(lstm_shapes.keys()))
+def create_lstm(input, shape, settings):
+    a = TimeDistributed(Dense(shape['nr_hidden'], use_bias=False))(input)
+    b = Bidirectional(LSTM(shape['nr_hidden'], recurrent_dropout=settings['dropout'], dropout=settings['dropout']))(a)
+    return b
 
-    lstms = [create_lstm(embeddings, lstm_shapes[k], setting) for k in keys]
-    joint = concatenate([lstm.output for lstm in lstms])
+
+def create_model(embeddings, lstm_shapes, setting):
+    keys = sorted(list(lstm_shapes.keys()))
+    inputs = [Input(shape=(lstm_shapes[k]['max_length'],), dtype='int32', name=k + '_input') for k in keys]
+
+    embedding = Embedding(
+        input_dim=embeddings.shape[0],
+        output_dim=embeddings.shape[1],
+        trainable=False,
+        weights=[embeddings],
+        mask_zero=True
+    )
+
+    embedded = [embedding(_in) for _in in inputs]
+
+    lstms = [create_lstm(input=embedded[i], shape=lstm_shapes[k], settings=setting) for i, k in enumerate(keys)]
+    joint = concatenate(lstms)
     joint = Dense(512, activation='relu')(joint)
     joint = Dropout(0.5)(joint)
     predictions = Dense(1, activation='sigmoid')(joint)
 
-    model = Model(inputs=[lstm.input for lstm in lstms], outputs=[predictions])
-    model.compile(optimizer=Adam(lr=setting['lr']), loss='binary_crossentropy', metrics=['mse']) #'accuracy'
+    model = Model(inputs=inputs, outputs=[predictions])
+    model.compile(optimizer=Adam(lr=setting['lr']), loss='binary_crossentropy', metrics=['mse'])  # 'accuracy'
+    return model
 
-    print("Parsing texts...")
-    train_docs_w_context = nlp.pipe(get_texts(train_records, keys=keys, max_entries=max_entries),
+
+def records_to_features(records, nlp, lstm_shapes, nb_threads_parse=3, max_entries=1):
+    keys = sorted(list(lstm_shapes.keys()))
+    train_docs_w_context = nlp.pipe(get_texts(records, keys=keys, max_entries=max_entries),
                                     n_threads=nb_threads_parse, as_tuples=True)
-    dev_docs_w_context = nlp.pipe(get_texts(dev_records, keys=keys, max_entries=max_entries),
-                                  n_threads=nb_threads_parse, as_tuples=True)
+    X, labels = get_features(train_docs_w_context, {k: lstm_shapes[k]['max_length'] for k in keys})
+    return X, labels
 
-    train_X, train_labels = get_features(train_docs_w_context, {k: lstm_shapes[k]['max_length'] for k in keys})
-    dev_X, dev_labels = get_features(dev_docs_w_context, {k: lstm_shapes[k]['max_length'] for k in keys})
-    model.fit([train_X[k] for k in keys], train_labels, validation_data=([dev_X[k] for k in keys], dev_labels),
+
+def train(train_features, train_labels, dev_features, dev_labels, embeddings,
+          lstm_shapes, setting, batch_size=100,
+          nb_epoch=5):
+    keys = sorted(list(lstm_shapes.keys()))
+    model = create_model(embeddings=embeddings, lstm_shapes=lstm_shapes, setting=setting)
+    model.fit([train_features[k] for k in keys], train_labels, validation_data=([dev_features[k] for k in keys], dev_labels),
               epochs=nb_epoch, batch_size=batch_size)
-    return model
-
-
-def create_lstm(embeddings, shape, settings):
-    model = Sequential()
-    model.add(
-        Embedding(
-            embeddings.shape[0],
-            embeddings.shape[1],
-            input_length=shape['max_length'],
-            trainable=False,
-            weights=[embeddings],
-            mask_zero=True
-        )
-    )
-    model.add(TimeDistributed(Dense(shape['nr_hidden'], use_bias=False)))
-    model.add(Bidirectional(LSTM(shape['nr_hidden'],
-                                 recurrent_dropout=settings['dropout'],
-                                 dropout=settings['dropout'])))
-    return model
-
-
-def compile_lstm(embeddings, shape, settings):
-    model = Sequential()
-    model.add(
-        Embedding(
-            embeddings.shape[0],
-            embeddings.shape[1],
-            input_length=shape['max_length'],
-            trainable=False,
-            weights=[embeddings],
-            mask_zero=True
-        )
-    )
-    model.add(TimeDistributed(Dense(shape['nr_hidden'], use_bias=False)))
-    model.add(Bidirectional(LSTM(shape['nr_hidden'],
-                                 recurrent_dropout=settings['dropout'],
-                                 dropout=settings['dropout'])))
-    model.add(Dense(shape['nr_class'], activation='sigmoid'))
-    model.compile(optimizer=Adam(lr=settings['lr']), loss='binary_crossentropy', metrics=['accuracy'])
     return model
 
 
@@ -276,13 +256,14 @@ def read_data(data_dir, limit=0):
     nb_epoch=("Number of training epochs", "option", "i", int),
     batch_size=("Size of minibatches for training LSTM", "option", "b", int),
     nr_examples=("Limit to N examples", "option", "n", int),
-    nb_threads_parse=("Number of threads used for parsing", "option", "p", int)
+    nb_threads_parse=("Number of threads used for parsing", "option", "p", int),
+    max_entries=("Maximum number of entries that are considered for multi entry fields (e.g. targetParagraphs)", "option", "m", int)
 )
 def main(model_dir=None, train_dir=None, dev_dir=None,
          is_runtime=False,
          nr_hidden=64, max_length=100, # Shape
          dropout=0.5, learn_rate=0.001, # General NN config
-         nb_epoch=5, batch_size=100, nr_examples=-1, nb_threads_parse=3):  # Training params
+         nb_epoch=5, batch_size=100, nr_examples=-1, nb_threads_parse=3, max_entries=-1):  # Training params
     if model_dir is not None:
         model_dir = pathlib.Path(model_dir)
     if train_dir is None or dev_dir is None:
@@ -290,17 +271,17 @@ def main(model_dir=None, train_dir=None, dev_dir=None,
         imdb_data = thinc.extra.datasets.imdb()
     if is_runtime:
         if dev_dir is None:
-            dev_records, dev_labels = zip(*imdb_data[1])
+            dev_records, _ = zip(*imdb_data[1])
         else:
-            dev_records, dev_labels = read_data(pathlib.Path(dev_dir))
+            dev_records, _ = read_data(pathlib.Path(dev_dir))
         acc = evaluate(model_dir, dev_records, dev_labels, max_length=max_length)
         print(acc)
     else:
         if train_dir is None:
-            train_records, train_labels = zip(*imdb_data[0])
+            train_records, _ = zip(*imdb_data[0])
         else:
             print("Read data")
-            train_records, train_labels = read_data(pathlib.Path(train_dir), limit=nr_examples)
+            train_records, _ = read_data(pathlib.Path(train_dir), limit=nr_examples)
         if dev_dir is None:
             dev_records, dev_labels = zip(*imdb_data[1])
         else:
@@ -312,11 +293,28 @@ def main(model_dir=None, train_dir=None, dev_dir=None,
             'targetKeywords': {'max_length': 100, 'nr_hidden': 30},
             'targetDescription': {'max_length': 100, 'nr_hidden': 30}
         }
-        model = train(train_records, dev_records,
+
+        print("Loading spaCy")
+        nlp = spacy.load('en_vectors_web_lg')
+        nlp.add_pipe(nlp.create_pipe('sentencizer'))
+
+        print("Parsing texts and convert to features...")
+        train_X, train_labels = records_to_features(records=train_records, nlp=nlp, lstm_shapes=lstm_shapes,
+                                                    nb_threads_parse=nb_threads_parse, max_entries=max_entries)
+        dev_X, dev_labels = records_to_features(records=dev_records, nlp=nlp, lstm_shapes=lstm_shapes,
+                                                nb_threads_parse=nb_threads_parse, max_entries=max_entries)
+
+        model = train(train_X, train_labels, dev_X, dev_labels,
+                      embeddings=get_embeddings(nlp.vocab),
                       lstm_shapes=lstm_shapes,
                       setting={'dropout': dropout, 'lr': learn_rate},
-                      nb_epoch=nb_epoch, batch_size=batch_size, nb_threads_parse=nb_threads_parse,
-                      max_entries=999)
+                      nb_epoch=nb_epoch, batch_size=batch_size)
+
+        # finally evaluate and write out dev results
+        y = model.predict([dev_X[k] for k in sorted(list(lstm_shapes.keys()))])
+        with (model_dir / 'predictions.jsonl').open('w') as file_:
+            file_.writelines(json.dumps({'id': record['id'], 'clickbaitScore': str(y[i][0])}) + '\n' for i, record in enumerate(dev_records))
+
         weights = model.get_weights()
         if model_dir is not None:
             with (model_dir / 'model').open('wb') as file_:
