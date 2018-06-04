@@ -145,7 +145,7 @@ def create_cnn(input, shape, settings):
     return x
 
 
-def create_inputs_and_embedded(embedding_weights, input_shapes):
+def create_inputs_and_embedded(embedding_weights, input_shapes, mask_zero=True):
     keys = sorted(list(input_shapes.keys()))
     inputs = [Input(shape=(input_shapes[k]['max_length'],), dtype='int32', name=k + '_input') for k in keys]
 
@@ -154,7 +154,7 @@ def create_inputs_and_embedded(embedding_weights, input_shapes):
         output_dim=embedding_weights.shape[1],
         trainable=False,
         weights=[embedding_weights],
-        mask_zero=True
+        mask_zero=mask_zero
     )
 
     embedded = [embedding(_in) for _in in inputs]
@@ -163,10 +163,16 @@ def create_inputs_and_embedded(embedding_weights, input_shapes):
 
 def create_model(embedding_weights, shapes, setting, create_single=create_lstm):
     keys = sorted(list(shapes.keys()))
-    inputs, embedded = create_inputs_and_embedded(embedding_weights=embedding_weights, input_shapes=shapes)
 
-    single = [create_single(input=embedded[i], shape=shapes[k], settings=setting) for i, k in enumerate(keys)]
-    joint = concatenate(single)
+    if create_single == create_lstm:
+        mask_zero = True
+    else:
+        mask_zero = False
+    inputs, embedded = create_inputs_and_embedded(embedding_weights=embedding_weights, input_shapes=shapes,
+                                                  mask_zero=mask_zero)
+
+    singles = [create_single(input=embedded[i], shape=shapes[k], settings=setting) for i, k in enumerate(keys)]
+    joint = concatenate(singles)
     joint = Dense(512, activation='relu')(joint)
     joint = Dropout(0.5)(joint)
     predictions = Dense(1, activation='sigmoid')(joint)
