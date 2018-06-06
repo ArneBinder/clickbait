@@ -188,7 +188,7 @@ def create_cnn2(input, shape, settings):
     # filters=64, kernel_size=3
     x = Conv1D(filters=shape['nb_filter'], kernel_size=shape['filter_length'], activation='relu')(input)
     x = Conv1D(filters=shape['nb_filter'], kernel_size=shape['filter_length'], activation='relu')(x)
-    x = MaxPooling1D(3)(x)
+    x = MaxPooling1D(shape['filter_length'])(x)
     # filters=128, kernel_size=3
     x = Conv1D(filters=shape['nb_filter'] * 2, kernel_size=shape['filter_length'], activation='relu')(x)
     x = Conv1D(filters=shape['nb_filter'] * 2, kernel_size=shape['filter_length'], activation='relu')(x)
@@ -232,10 +232,16 @@ def create_model(embedding_weights, shapes, setting, create_single=create_lstm, 
         input_images = Reshape((-1,))(input_images)
         input_images = Dense(128, activation='relu')(input_images)
         input_images = Dropout(setting['dropout'])(input_images)
+        #input_images = Dense(128, activation='relu')(input_images)
+        #input_images = Dropout(setting['dropout'])(input_images)
         singles[images_key] = input_images
     joint = concatenate(as_list(singles))
     joint = Dense(512, activation='relu')(joint)
     joint = Dropout(setting['dropout'])(joint)
+    #joint = Dense(256, activation='relu')(joint)
+    #joint = Dropout(setting['dropout'])(joint)
+    #joint = Dense(128, activation='relu')(joint)
+    #joint = Dropout(setting['dropout'])(joint)
     predictions = Dense(1, activation='sigmoid')(joint)
 
     model = Model(inputs=as_list(inputs), outputs=[predictions])
@@ -431,7 +437,7 @@ def main(model_dir=None, train_dir=None, dev_dir=None,
          is_runtime=False,
          #nr_hidden=64, max_length=100,  # Shape
          dropout=0.5, learn_rate=0.001,  # General NN config
-         nb_epoch=5, batch_size=100, nr_examples=-1, nb_threads_parse=3, max_entries=-1, model_type='lstm',
+         nb_epoch=100, batch_size=100, nr_examples=-1, nb_threads_parse=3, max_entries=-1, model_type='lstm',
          use_images=False, image_embedding_function='vgg16.VGG16'):  # Training params
     key_image = 'postMedia'
     if use_images:
@@ -515,7 +521,7 @@ def main(model_dir=None, train_dir=None, dev_dir=None,
                              images_key=key_image if use_images else None)
 
         callbacks = [
-            EarlyStopping(monitor='val_mean_squared_error', min_delta=1e-4, patience=3, verbose=1),
+            EarlyStopping(monitor='val_mean_squared_error', min_delta=1e-4, patience=10, verbose=1),
             #keras.callbacks.ReduceLROnPlateau(monitor='loss', factor=0.1, epsilon=0.0001, patience=2, cooldown=1,
             #                                  verbose=1)
         ]
