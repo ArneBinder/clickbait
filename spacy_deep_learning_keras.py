@@ -21,9 +21,7 @@ import spacy  # install
 import thinc.extra.datasets
 # tensorflow: install
 # keras: install
-from keras import Model, Input
-from keras.applications.vgg16 import VGG16
-from keras.applications.vgg16 import preprocess_input
+from keras import Model, Input, applications
 from keras.callbacks import EarlyStopping
 from keras.layers import LSTM, Dense, Embedding, Bidirectional, concatenate, Dropout, SpatialDropout1D, \
     BatchNormalization, Conv1D, GlobalMaxPooling1D, MaxPooling1D, GlobalAveragePooling1D, Reshape
@@ -230,7 +228,6 @@ def create_model(embedding_weights, shapes, setting, create_single=create_lstm, 
         assert images_key is not None, 'images_shape is give, but images_key is None'
         input_images = Input(shape=images_shape, dtype='float32', name=images_key+'_input')
         inputs[images_key] = input_images
-        #out_size = np.prod(np.array(images_shape))
         # flatten image features
         input_images = Reshape((-1,))(input_images)
         input_images = Dense(128, activation='relu')(input_images)
@@ -246,7 +243,8 @@ def create_model(embedding_weights, shapes, setting, create_single=create_lstm, 
     return model
 
 
-def records_to_features(records, nlp, shapes, nb_threads_parse=3, max_entries=1, key_image=None, data_dir=None):
+def records_to_features(records, nlp, shapes, nb_threads_parse=3, max_entries=1, key_image=None, data_dir=None,
+                        image_model_function_name='vgg16.VGG16'):
     logger.info("Parsing texts and convert to features...")
     keys_text = sorted([k for k in shapes.keys() if k != key_image])
     train_docs_w_context = nlp.pipe(get_texts(records, keys=keys_text, max_entries=max_entries),
@@ -256,15 +254,19 @@ def records_to_features(records, nlp, shapes, nb_threads_parse=3, max_entries=1,
     if key_image is not None:
         logger.info('add image features...')
         assert data_dir is not None, 'key_image is not None, but no data_dir given'
+        names = tuple(image_model_function_name.split('.'))
+        assert len(names) == 2, 'image_model_function_name=%s has wrong format. Expected: <module_name>.<function_name>' % image_model_function_name
+        model_module_name, model_function_name = names
+        model_module = getattr(applications, model_module_name)
+        model_function = getattr(model_module, model_function_name)
+        preprocessing_function = getattr(model_module, 'preprocess_input')
+        logger.info('use %s to embed images' % model_function.__name__)
 
         ids_mapping = {_id: i for i, _id in enumerate(ids)}
-        # TODO: try other image models (see https://keras.io/applications/), e.g. InceptionResNetV2
-        model = VGG16(weights='imagenet', include_top=False)
-        dummy = np.zeros(shape=(1, 7, 7, 512), dtype=np.float32)
-        X[key_image] = np.zeros(shape=[len(ids)] + list(dummy.shape), dtype=np.float32)
+        model = model_function(weights='imagenet', include_top=False)
 
-        fn_images_embeddings = data_dir / 'images.embedded.npy'
-        fn_images_ids = data_dir / 'images.ids.npy'
+        fn_images_embeddings = data_dir / ('images.%s.embedded.npy' % model_function.__name__)
+        fn_images_ids = data_dir / ('images.%s.ids.npy' % model_function.__name__)
         new_images_ids = []
         if fn_images_ids.exists():
             logger.info('load pre-calculated image embeddings')
@@ -279,35 +281,45 @@ def records_to_features(records, nlp, shapes, nb_threads_parse=3, max_entries=1,
         logger.info('embed images...')
         for record in records:
             if record['id'] in images_ids:
-                X[key_image][ids_mapping[record['id']]] = images_embeddings[images_ids_mapping[record['id']]]
+                current_embedding = images_embeddings[images_ids_mapping[record['id']]]
+                if key_image not in X:
+                    X[key_image] = np.zeros(shape=[len(ids)] + list(current_embedding.shape), dtype=np.float32)
+                X[key_image][ids_mapping[record['id']]] = current_embedding
             else:
-                feature_list = [dummy]
+                feature_list = []
                 for path in record[key_image]:
-
                     img_path = data_dir / path
+                    # TODO: adapt target size from model
                     img = image.load_img(img_path, target_size=(224, 224))
                     x = image.img_to_array(img)
                     x = np.expand_dims(x, axis=0)
-                    x = preprocess_input(x)
+                    x = preprocessing_function(x)
 
                     current_features = model.predict(x)
                     feature_list.append(current_features)
-                X[key_image][ids_mapping[record['id']]] = np.sum(feature_list, axis=0)
-                new_images_ids.append(record['id'])
+                if len(feature_list) > 0:
+                    current_embedding = np.sum(feature_list, axis=0)
+                    if key_image not in X:
+                        X[key_image] = np.zeros(shape=[len(ids)] + list(current_embedding.shape), dtype=np.float32)
+                    X[key_image][ids_mapping[record['id']]] = current_embedding
+                    new_images_ids.append(record['id'])
 
-        new_images_embeddings = X[key_image][np.array([ids_mapping[new_id] for new_id in new_images_ids])]
         logger.info('calculated %i new image embeddings' % len(new_images_ids))
+        if len(new_images_ids) > 0:
+            new_images_embeddings = X[key_image][np.array([ids_mapping[new_id] for new_id in new_images_ids])]
+            if images_embeddings is not None:
+                images_embeddings = np.concatenate((images_embeddings, new_images_embeddings), axis=0)
+                images_ids = np.concatenate((images_ids, np.array(new_images_ids, dtype=int)))
+            else:
+                images_embeddings = new_images_embeddings
+                images_ids = np.array(new_images_ids, dtype=int)
+
         if images_embeddings is not None:
-            images_embeddings = np.concatenate((images_embeddings, new_images_embeddings), axis=0)
-            images_ids = np.concatenate((images_ids, np.array(new_images_ids, dtype=int)))
-        else:
-            images_embeddings = new_images_embeddings
-            images_ids = np.array(new_images_ids, dtype=int)
+            logger.info('save calculated image embeddings...')
+            np.save(fn_images_embeddings, images_embeddings)
+            np.save(fn_images_ids, images_ids)
 
-        logger.info('save calculated image embeddings...')
-        np.save(fn_images_embeddings, images_embeddings)
-
-        np.save(fn_images_ids, images_ids)
+        assert key_image in X, 'no image data found in records'
 
     return X, labels
 
@@ -410,14 +422,17 @@ def get_nlp():
     max_entries=("Maximum number of entries that are considered for multi entry fields (e.g. targetParagraphs)",
                  "option", "x", int),
     model_type=("one of: lstm, cnn", "option", "m", str),
-    use_images=("use image data", "flag", "g", bool)
+    use_images=("use image data", "flag", "g", bool),
+    image_embedding_function=("the imagenet model function (from keras.applications) used to embed the images. "
+                              "Has to be in the format: <model_name>.<function_name>, e.g. vgg16.VGG16",
+                              "option", "f", str)
 )
 def main(model_dir=None, train_dir=None, dev_dir=None,
          is_runtime=False,
          #nr_hidden=64, max_length=100,  # Shape
          dropout=0.5, learn_rate=0.001,  # General NN config
-         nb_epoch=5, batch_size=100, nr_examples=-1, nb_threads_parse=3, max_entries=-1, model_type='lstm', use_images=False):  # Training params
-
+         nb_epoch=5, batch_size=100, nr_examples=-1, nb_threads_parse=3, max_entries=-1, model_type='lstm',
+         use_images=False, image_embedding_function='vgg16.VGG16'):  # Training params
     key_image = 'postMedia'
     if use_images:
         logger.info('use image data')
@@ -427,11 +442,7 @@ def main(model_dir=None, train_dir=None, dev_dir=None,
         raise NotImplementedError('dataset fetching not implemented')
         imdb_data = thinc.extra.datasets.imdb()
     if is_runtime:
-        # TODO: implement evaluation with image data
-        if dev_dir is None:
-            dev_records, _ = zip(*imdb_data[1])
-        else:
-            dev_records, _ = read_data(pathlib.Path(dev_dir))
+        dev_records, _ = read_data(pathlib.Path(dev_dir))
         nlp = get_nlp()
         logger.info("Loading model...")
         model, config = load_model(model_dir, nlp)
@@ -441,17 +452,13 @@ def main(model_dir=None, train_dir=None, dev_dir=None,
         dev_X, dev_labels = records_to_features(records=dev_records, nlp=nlp, shapes=shapes,
                                                 nb_threads_parse=nb_threads_parse, max_entries=max_entries,
                                                 key_image=key_image if use_images else None,
-                                                data_dir=pathlib.Path(dev_dir))
+                                                data_dir=pathlib.Path(dev_dir),
+                                                # TODO: depend on model?
+                                                image_model_function_name=image_embedding_function)
     else:
-        if train_dir is None:
-            train_records, _ = zip(*imdb_data[0])
-        else:
-            logger.info("Read data")
-            train_records, _ = read_data(pathlib.Path(train_dir), limit=nr_examples, dont_shuffle=True)
-        if dev_dir is None:
-            dev_records, _ = zip(*imdb_data[1])
-        else:
-            dev_records, _ = read_data(pathlib.Path(dev_dir), limit=nr_examples, dont_shuffle=True)
+        logger.info("Read data")
+        train_records, _ = read_data(pathlib.Path(train_dir), limit=nr_examples, dont_shuffle=True)
+        dev_records, _ = read_data(pathlib.Path(dev_dir), limit=nr_examples, dont_shuffle=True)
 
         lstm_shapes = {
             'targetParagraphs': {'max_length': 500, 'nr_hidden': 64},
@@ -494,10 +501,12 @@ def main(model_dir=None, train_dir=None, dev_dir=None,
 
         train_X, train_labels = records_to_features(records=train_records, nlp=nlp, shapes=lstm_shapes,
                                                     nb_threads_parse=nb_threads_parse, max_entries=max_entries,
-                                                    key_image=key_image if use_images else None, data_dir=pathlib.Path(train_dir))
+                                                    key_image=key_image if use_images else None, data_dir=pathlib.Path(train_dir),
+                                                    image_model_function_name=image_embedding_function)
         dev_X, dev_labels = records_to_features(records=dev_records, nlp=nlp, shapes=lstm_shapes,
                                                 nb_threads_parse=nb_threads_parse, max_entries=max_entries,
-                                                key_image=key_image if use_images else None, data_dir=pathlib.Path(dev_dir))
+                                                key_image=key_image if use_images else None, data_dir=pathlib.Path(dev_dir),
+                                                image_model_function_name=image_embedding_function)
 
         model = create_model(embedding_weights=get_embeddings(nlp.vocab), shapes=shapes,
                              setting={'dropout': dropout, 'lr': learn_rate},
