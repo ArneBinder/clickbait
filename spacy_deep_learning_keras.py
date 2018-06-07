@@ -70,7 +70,7 @@ class SentimentAnalyser(object):
         self.max_lengths = max_lengths
 
     def __call__(self, doc):
-        X = get_features([doc], self.max_lengths)
+        X = get_text_features([doc], self.max_lengths)
         y = self._model.predict(X)
         self.set_sentiment(doc, y)
 
@@ -80,7 +80,7 @@ class SentimentAnalyser(object):
             sentences = []
             for doc in minibatch:
                 sentences.extend(doc.sents)
-            Xs = get_features(sentences, self.max_lengths)
+            Xs = get_text_features(sentences, self.max_lengths)
             ys = self._model.predict(Xs)
             for sent, label in zip(sentences, ys):
                 sent.doc.sentiment += label - 0.5
@@ -105,7 +105,7 @@ def get_labelled_sentences(docs, doc_labels):
     return sentences, np.asarray(labels, dtype='int32')
 
 
-def get_features(docs_w_context, max_lengths):
+def get_text_features(docs_w_context, max_lengths):
     records_dict = {}
     for i, (doc, c) in enumerate(docs_w_context):
         current_record = records_dict.get(c[0], {})
@@ -125,7 +125,10 @@ def get_features(docs_w_context, max_lengths):
         ids.append(_id)
         for k in max_lengths.keys():
             j = 0
-            for token in docs[k]:
+            # allow concatenated text fields
+            tokens_unflat = [docs[k_] for k_ in k.split(',')]
+            tokens_flat = [item for sublist in tokens_unflat for item in sublist]
+            for token in tokens_flat:
                 vector_id = token.vocab.vectors.find(key=token.orth)
                 if vector_id >= 0:
                     Xs[k][i, j] = vector_id
@@ -135,6 +138,81 @@ def get_features(docs_w_context, max_lengths):
                 if j >= max_lengths[k]:
                     break
     return Xs, labels, ids
+
+
+def get_image_features(records, ids, key_image, data_dir, image_model_function_name='vgg16.VGG16'):
+
+    X_image = None
+
+    names = tuple(image_model_function_name.split('.'))
+    assert len(names) == 2, 'image_model_function_name=%s has wrong format. Expected: <module_name>.<function_name>' \
+                            % image_model_function_name
+    model_module_name, model_function_name = names
+    model_module = getattr(applications, model_module_name)
+    model_function = getattr(model_module, model_function_name)
+    preprocessing_function = getattr(model_module, 'preprocess_input')
+    logger.info('use %s to embed images' % model_function.__name__)
+
+    ids_mapping = {_id: i for i, _id in enumerate(ids)}
+    model = None
+
+    fn_images_embeddings = data_dir / ('images.%s.embedded.npy' % model_function.__name__)
+    fn_images_ids = data_dir / ('images.%s.ids.npy' % model_function.__name__)
+    new_images_ids = []
+    if fn_images_ids.exists():
+        logger.info('load pre-calculated image embeddings')
+        assert fn_images_embeddings.exists(), 'found images_ids file, but not images_embeddings file'
+        images_ids = np.load(fn_images_ids)
+        images_embeddings = np.load(fn_images_embeddings)
+        images_ids_mapping = {_id: i for i, _id in enumerate(images_ids)}
+    else:
+        images_ids = []
+        images_embeddings = None
+
+    logger.info('embed images...')
+    for record in records:
+        if record['id'] in images_ids:
+            current_embedding = images_embeddings[images_ids_mapping[record['id']]]
+            if X_image is None:  # initialize lazy
+                X_image = np.zeros(shape=[len(ids)] + list(current_embedding.shape), dtype=np.float32)
+            X_image[ids_mapping[record['id']]] = current_embedding
+        else:
+            feature_list = []
+            for path in record[key_image]:
+                img_path = data_dir / path
+                # TODO: adapt target size from model
+                img = image.load_img(img_path, target_size=(224, 224))
+                x = image.img_to_array(img)
+                x = np.expand_dims(x, axis=0)
+                x = preprocessing_function(x)
+
+                if model is None:  # initialize lazy
+                    model = model_function(weights='imagenet', include_top=False)
+                current_features = model.predict(x)
+                feature_list.append(current_features)
+            if len(feature_list) > 0:
+                current_embedding = np.sum(feature_list, axis=0)
+                if X_image is None:  # initialize lazy
+                    X_image = np.zeros(shape=[len(ids)] + list(current_embedding.shape), dtype=np.float32)
+                X_image[ids_mapping[record['id']]] = current_embedding
+                new_images_ids.append(record['id'])
+
+    logger.info('calculated %i new image embeddings' % len(new_images_ids))
+    if len(new_images_ids) > 0:
+        new_images_embeddings = X_image[np.array([ids_mapping[new_id] for new_id in new_images_ids])]
+        if images_embeddings is not None:
+            images_embeddings = np.concatenate((images_embeddings, new_images_embeddings), axis=0)
+            images_ids = np.concatenate((images_ids, np.array(new_images_ids, dtype=int)))
+        else:
+            images_embeddings = new_images_embeddings
+            images_ids = np.array(new_images_ids, dtype=int)
+
+    if images_embeddings is not None:
+        logger.info('save calculated image embeddings...')
+        np.save(fn_images_embeddings, images_embeddings)
+        np.save(fn_images_ids, images_ids)
+
+    return X_image
 
 
 def get_texts(contents, keys=('postText', 'targetTitle', 'targetDescription', 'targetKeywords', 'targetParagraphs',
@@ -197,9 +275,25 @@ def create_cnn2(input, shape, settings):
     return x
 
 
-def create_inputs_and_embedded(embedding_weights, input_shapes, mask_zero=True):
+def create_cnn_image(input, shape, settings):
+    x = input
+    if len(shape.get('layers', [])):
+        logger.warning('no images layers defined (layers does not contain any layer size), '
+                       'but image data is used.')
+    for size in shape['layers']:
+        x = Dense(size, activation='relu')(x)
+        x = Dropout(settings['dropout'])(x)
+    return x
+
+
+def create_inputs_and_embedded(embedding_weights, input_shapes):
     keys = sorted(list(input_shapes.keys()))
-    inputs = {k: Input(shape=(input_shapes[k]['max_length'],), dtype='int32', name=k + '_input') for k in keys}
+    inputs_text = {k: Input(shape=(input_shapes[k]['max_length'],), dtype='int32', name=k.replace(',', '-') + '_input')
+                   for k in keys if 'max_length' in input_shapes[k]}
+
+    # use mask_zero only, if no cnn is involved to handle embedded text
+    mask_zero = len([1 for k in inputs_text.keys() if 'cnn' in input_shapes[k]['model']]) == 0
+    logger.debug('mask_zero=%s' % str(mask_zero))
 
     embedding = Embedding(
         input_dim=embedding_weights.shape[0],
@@ -209,156 +303,60 @@ def create_inputs_and_embedded(embedding_weights, input_shapes, mask_zero=True):
         mask_zero=mask_zero
     )
 
-    embedded = {k: embedding(inputs[k]) for k in keys}
-    return inputs, embedded
+    embedded_text = {k: embedding(inputs_text[k]) for k in inputs_text.keys()}
+
+    # add already embedded input (e.g. image data)
+    inputs_other = {k: Input(shape=input_shapes[k]['input_shape'], dtype='float32', name=k + '_input')
+                    for k in keys if 'input_shape' in input_shapes[k]}
+    embedded_other = {k: Reshape((-1,))(inputs_other[k]) for k in inputs_other.keys()}
+
+    inputs_text.update(inputs_other)
+    embedded_text.update(embedded_other)
+    return inputs_text, embedded_text
 
 
-def create_model(embedding_weights, shapes, setting, create_single=create_lstm, images_shape=None, images_key=None):
+def create_model(embedding_weights, shapes, setting):
     keys = sorted(list(shapes.keys()))
 
-    if create_single == create_lstm:
-        mask_zero = True
-    else:
-        mask_zero = False
-    inputs, embedded = create_inputs_and_embedded(embedding_weights=embedding_weights, input_shapes=shapes,
-                                                  mask_zero=mask_zero)
+    inputs, embedded = create_inputs_and_embedded(embedding_weights=embedding_weights, input_shapes=shapes)
 
-    singles = {k: create_single(input=embedded[k], shape=shapes[k], settings=setting) for i, k in enumerate(keys)}
-    if images_shape is not None:
-        assert images_key is not None, 'images_shape is give, but images_key is None'
-        input_images = Input(shape=images_shape, dtype='float32', name=images_key+'_input')
-        inputs[images_key] = input_images
-        # flatten image features
-        input_images = Reshape((-1,))(input_images)
-        input_images = Dense(128, activation='relu')(input_images)
-        input_images = Dropout(setting['dropout'])(input_images)
-        #input_images = Dense(128, activation='relu')(input_images)
-        #input_images = Dropout(setting['dropout'])(input_images)
-        singles[images_key] = input_images
+    singles = {k: globals()[shapes[k]['model']](input=embedded[k], shape=shapes[k], settings=setting) for i, k in enumerate(keys)}
     joint = concatenate(as_list(singles))
-    joint = Dense(512, activation='relu')(joint)
-    joint = Dropout(setting['dropout'])(joint)
-    #joint = Dense(256, activation='relu')(joint)
-    #joint = Dropout(setting['dropout'])(joint)
-    #joint = Dense(128, activation='relu')(joint)
-    #joint = Dropout(setting['dropout'])(joint)
+    if len(setting.get('final_layers', [])):
+        logger.warning('no final layers defined (final_layers does not contain any layer size)')
+    for size in setting['final_layers']:
+        joint = Dense(size, activation='relu')(joint)
+        joint = Dropout(setting['dropout'])(joint)
+
     predictions = Dense(1, activation='sigmoid')(joint)
 
     model = Model(inputs=as_list(inputs), outputs=[predictions])
-    model.compile(optimizer=Adam(lr=setting['lr']), loss='binary_crossentropy', metrics=['mse'])  # 'accuracy'
+    model.compile(optimizer=Adam(lr=setting['learn_rate']), loss='binary_crossentropy', metrics=['mse'])  # 'accuracy'
     return model
 
 
 def records_to_features(records, nlp, shapes, nb_threads_parse=3, max_entries=1, key_image=None, data_dir=None,
                         image_model_function_name='vgg16.VGG16'):
     logger.info("Parsing texts and convert to features...")
-    keys_text = sorted([k for k in shapes.keys() if k != key_image])
-    train_docs_w_context = nlp.pipe(get_texts(records, keys=keys_text, max_entries=max_entries),
+    keys_text_unflat = [k.split(',') for k in shapes.keys() if k != key_image]
+    keys_text_split = sorted([item for sublist in keys_text_unflat for item in sublist])
+    train_docs_w_context = nlp.pipe(get_texts(records, keys=keys_text_split, max_entries=max_entries),
                                     n_threads=nb_threads_parse, as_tuples=True)
-    X, labels, ids = get_features(train_docs_w_context, {k: shapes[k]['max_length'] for k in keys_text})
+    X, labels, ids = get_text_features(train_docs_w_context, {k: shapes[k]['max_length'] for k in shapes.keys() if k!=key_image})
 
     if key_image is not None:
         logger.info('add image features...')
         assert data_dir is not None, 'key_image is not None, but no data_dir given'
-        names = tuple(image_model_function_name.split('.'))
-        assert len(names) == 2, 'image_model_function_name=%s has wrong format. Expected: <module_name>.<function_name>' % image_model_function_name
-        model_module_name, model_function_name = names
-        model_module = getattr(applications, model_module_name)
-        model_function = getattr(model_module, model_function_name)
-        preprocessing_function = getattr(model_module, 'preprocess_input')
-        logger.info('use %s to embed images' % model_function.__name__)
 
-        ids_mapping = {_id: i for i, _id in enumerate(ids)}
-        model = model_function(weights='imagenet', include_top=False)
-
-        fn_images_embeddings = data_dir / ('images.%s.embedded.npy' % model_function.__name__)
-        fn_images_ids = data_dir / ('images.%s.ids.npy' % model_function.__name__)
-        new_images_ids = []
-        if fn_images_ids.exists():
-            logger.info('load pre-calculated image embeddings')
-            assert fn_images_embeddings.exists(), 'found images_ids file, but not images_embeddings file'
-            images_ids = np.load(fn_images_ids)
-            images_embeddings = np.load(fn_images_embeddings)
-            images_ids_mapping = {_id: i for i, _id in enumerate(images_ids)}
-        else:
-            images_ids = []
-            images_embeddings = None
-
-        logger.info('embed images...')
-        for record in records:
-            if record['id'] in images_ids:
-                current_embedding = images_embeddings[images_ids_mapping[record['id']]]
-                if key_image not in X:
-                    X[key_image] = np.zeros(shape=[len(ids)] + list(current_embedding.shape), dtype=np.float32)
-                X[key_image][ids_mapping[record['id']]] = current_embedding
-            else:
-                feature_list = []
-                for path in record[key_image]:
-                    img_path = data_dir / path
-                    # TODO: adapt target size from model
-                    img = image.load_img(img_path, target_size=(224, 224))
-                    x = image.img_to_array(img)
-                    x = np.expand_dims(x, axis=0)
-                    x = preprocessing_function(x)
-
-                    current_features = model.predict(x)
-                    feature_list.append(current_features)
-                if len(feature_list) > 0:
-                    current_embedding = np.sum(feature_list, axis=0)
-                    if key_image not in X:
-                        X[key_image] = np.zeros(shape=[len(ids)] + list(current_embedding.shape), dtype=np.float32)
-                    X[key_image][ids_mapping[record['id']]] = current_embedding
-                    new_images_ids.append(record['id'])
-
-        logger.info('calculated %i new image embeddings' % len(new_images_ids))
-        if len(new_images_ids) > 0:
-            new_images_embeddings = X[key_image][np.array([ids_mapping[new_id] for new_id in new_images_ids])]
-            if images_embeddings is not None:
-                images_embeddings = np.concatenate((images_embeddings, new_images_embeddings), axis=0)
-                images_ids = np.concatenate((images_ids, np.array(new_images_ids, dtype=int)))
-            else:
-                images_embeddings = new_images_embeddings
-                images_ids = np.array(new_images_ids, dtype=int)
-
-        if images_embeddings is not None:
-            logger.info('save calculated image embeddings...')
-            np.save(fn_images_embeddings, images_embeddings)
-            np.save(fn_images_ids, images_ids)
-
-        assert key_image in X, 'no image data found in records'
+        X_image = get_image_features(records, ids, key_image, data_dir, image_model_function_name)
+        assert X_image is not None, 'no image data found in records'
+        X[key_image] = X_image
 
     return X, labels
 
 
 def get_embeddings(vocab):
     return vocab.vectors.data
-
-
-# DEPRECATED
-def evaluate(model_dir, contents, labels, max_length=100):
-    def create_pipeline(nlp):
-        '''
-        This could be a lambda, but named functions are easier to read in Python.
-        '''
-        #return [nlp.tagger, nlp.parser, SentimentAnalyser.load(model_dir, nlp,
-        #                                                       max_length=max_length)]
-        return [nlp.create_pipe('sentencizer'), SentimentAnalyser.load(model_dir, nlp,
-                                                               max_length=max_length)]
-
-    #nlp = spacy.load('en')
-    nlp = spacy.load('en_vectors_web_lg')
-    #nlp.pipeline = create_pipeline(nlp)
-    nlp.add_pipe(nlp.create_pipe('sentencizer'))
-    nlp.add_pipe(SentimentAnalyser.load(model_dir, nlp, max_length=max_length))
-
-    correct = 0
-    i = 0
-    for doc, context in nlp.pipe(get_texts(contents, keys=['targetParagraphs']), batch_size=1000, n_threads=4,
-                                 as_tuples=True):
-        #correct += bool(doc.sentiment >= 0.5) == bool(labels[i])
-        correct += bool(doc.sentiment >= 0.5) == bool(context[-1])
-        i += 1
-    return float(correct) / i
 
 
 def read_data(data_dir, limit=0, dont_shuffle=False):
@@ -401,7 +399,8 @@ def get_max_lengths_from_config(config):
     for l in layers:
         n = l['name']
         if n.endswith('_input'):
-            res[n[:-len('_input')]] = {'max_length': l['config']['batch_input_shape'][-1]}
+            k = n[:-len('_input')]
+            res[k.replace('-', ',')] = {'max_length': l['config']['batch_input_shape'][-1]}
     return res
 
 
@@ -417,8 +416,6 @@ def get_nlp():
     dev_dir=("Location of development file or directory"),
     model_dir=("Location of output model directory",),
     is_runtime=("Demonstrate run-time usage", "flag", "r", bool),
-    #nr_hidden=("Number of hidden units", "option", "H", int),
-    #max_length=("Maximum sentence length", "option", "L", int),
     dropout=("Dropout", "option", "d", float),
     learn_rate=("Learn rate", "option", "e", float),
     nb_epoch=("Number of training epochs", "option", "i", int),
@@ -431,12 +428,21 @@ def get_nlp():
     use_images=("use image data", "flag", "g", bool),
     image_embedding_function=("the imagenet model function (from keras.applications) used to embed the images. "
                               "Has to be in the format: <model_name>.<function_name>, e.g. vgg16.VGG16",
-                              "option", "f", str)
+                              "option", "f", str),
+    shapes=("a json dict defining the shapes of the final_layers, and, eventually, dropout and learning_rate",
+            "option", None, str),
+    # e.g. setting: {"final_layers":[512],"dropout":0.5,"learn_rate":0.001}
+    setting=("a json dict defining parameters for submodules for individual (eventually concatenated by ',') textual "
+             "and image features", "option", None, str),
+    # e.g. shapes: {"postText,targetTitle,targetDescription,targetParagraphs,targetKeywords":
+    #                   {"model":"create_lstm", "max_length":500,"nr_hidden":128},
+    #               "postMedia":
+    #                   {"model":"create_cnn_image", "input_shape":[1,5,5,1536],"layers":[128]}}
 )
 def main(model_dir=None, train_dir=None, dev_dir=None,
          is_runtime=False,
-         #nr_hidden=64, max_length=100,  # Shape
-         dropout=0.5, learn_rate=0.001,  # General NN config
+         shapes=None,  # Shape
+         dropout=0.5, learn_rate=0.001, setting=None, # General NN config (via individual parameters or setting dict)
          nb_epoch=100, batch_size=100, nr_examples=-1, nb_threads_parse=3, max_entries=-1, model_type='lstm',
          use_images=False, image_embedding_function='vgg16.VGG16'):  # Training params
     key_image = 'postMedia'
@@ -462,46 +468,51 @@ def main(model_dir=None, train_dir=None, dev_dir=None,
                                                 # TODO: depend on model?
                                                 image_model_function_name=image_embedding_function)
     else:
+        # some defaults...
+        if shapes is None or shapes == '':
+            lstm_shapes = {
+                'targetParagraphs': {'model': create_lstm.__name__, 'max_length': 500, 'nr_hidden': 64},
+                'postText': {'model': create_lstm.__name__, 'max_length': 50, 'nr_hidden': 30},
+                'targetTitle': {'model': create_lstm.__name__, 'max_length': 50, 'nr_hidden': 30},
+                'targetKeywords': {'model': create_lstm.__name__, 'max_length': 100, 'nr_hidden': 30},
+                'targetDescription': {'model': create_lstm.__name__, 'max_length': 100, 'nr_hidden': 30},
+                #'postMedia': {'model': create_cnn_image.__name__, 'input_shape': None}
+            }
+            #lstm_shapes = {
+            #    'postText,targetTitle,targetDescription,targetParagraphs,targetKeywords':
+            #        {'model': create_lstm.__name__, 'max_length': 500, 'nr_hidden': 128},
+            #    # 'postMedia': {'model': create_cnn_image.__name__, 'input_shape': None}
+            #}
+
+            # max_length, filter_length, nb_filter
+            cnn_shapes = {
+                'targetParagraphs': {'model': create_cnn.__name__, 'max_length': 500, 'filter_length': 10, 'nb_filter': 200},
+                'postText': {'model': create_cnn.__name__, 'max_length': 50, 'filter_length': 3, 'nb_filter': 50},
+                'targetTitle': {'model': create_cnn.__name__, 'max_length': 50, 'filter_length': 2, 'nb_filter': 50},
+                'targetKeywords': {'model': create_cnn.__name__, 'max_length': 100, 'filter_length': 1, 'nb_filter': 50},
+                'targetDescription': {'model': create_cnn.__name__, 'max_length': 100, 'filter_length': 5, 'nb_filter': 50},
+                #'postMedia': {'model': create_cnn_image.__name__, 'input_shape': None, 'layers': [128]}
+            }
+
+            if model_type == 'lstm':
+                logger.info('use lstm model')
+                shapes = lstm_shapes
+            elif model_type == 'cnn':
+                logger.info('use cnn model')
+                shapes = cnn_shapes
+            #elif model_type == 'cnn2':
+            #    logger.info('use cnn2 model')
+            #    shapes = cnn_shapes
+            #elif model_type == 'lstm_stacked':
+            #    logger.info('use lstm_stacked model')
+            #    shapes = lstm_shapes
+            else:
+                raise ValueError('unknown model_type=%s. use one of: %s'
+                                 % (model_type, ' '.join(['lstm', 'cnn', 'cnn2', 'lstm_stacked'])))
+
         logger.info("Read data")
         train_records, _ = read_data(pathlib.Path(train_dir), limit=nr_examples, dont_shuffle=True)
         dev_records, _ = read_data(pathlib.Path(dev_dir), limit=nr_examples, dont_shuffle=True)
-
-        lstm_shapes = {
-            'targetParagraphs': {'max_length': 500, 'nr_hidden': 64},
-            'postText': {'max_length': 50, 'nr_hidden': 30},
-            'targetTitle': {'max_length': 50, 'nr_hidden': 30},
-            'targetKeywords': {'max_length': 100, 'nr_hidden': 30},
-            'targetDescription': {'max_length': 100, 'nr_hidden': 30}
-        }
-
-        # max_length, filter_length, nb_filter
-        cnn_shapes = {
-            'targetParagraphs': {'max_length': 500, 'filter_length': 10, 'nb_filter': 200},
-            'postText': {'max_length': 50, 'filter_length': 3, 'nb_filter': 50},
-            'targetTitle': {'max_length': 50, 'filter_length': 2, 'nb_filter': 50},
-            'targetKeywords': {'max_length': 100, 'filter_length': 1, 'nb_filter': 50},
-            'targetDescription': {'max_length': 100, 'filter_length': 5, 'nb_filter': 50}
-        }
-
-        if model_type == 'lstm':
-            logger.info('use lstm model')
-            shapes = lstm_shapes
-            create_single = create_lstm
-        elif model_type == 'cnn':
-            logger.info('use cnn model')
-            shapes = cnn_shapes
-            create_single = create_cnn
-        elif model_type == 'cnn2':
-            logger.info('use cnn2 model')
-            shapes = cnn_shapes
-            create_single = create_cnn2
-        elif model_type == 'lstm_stacked':
-            logger.info('use lstm_stacked model')
-            shapes = lstm_shapes
-            create_single = create_lstm_stacked
-        else:
-            raise ValueError('unknown model_type=%s. use one of: %s'
-                             % (model_type, ' '.join(['lstm', 'cnn', 'cnn2', 'lstm_stacked'])))
 
         nlp = get_nlp()
 
@@ -514,11 +525,23 @@ def main(model_dir=None, train_dir=None, dev_dir=None,
                                                 key_image=key_image if use_images else None, data_dir=pathlib.Path(dev_dir),
                                                 image_model_function_name=image_embedding_function)
 
-        model = create_model(embedding_weights=get_embeddings(nlp.vocab), shapes=shapes,
-                             setting={'dropout': dropout, 'lr': learn_rate},
-                             create_single=create_single,
-                             images_shape=train_X[key_image].shape[1:] if use_images else None,
-                             images_key=key_image if use_images else None)
+        if setting is None or setting == '':
+            setting = {'final_layers': [512]}
+        else:
+            setting = json.loads(setting)
+
+        setting['dropout'] = setting.get('dropout', None) or dropout
+        setting['learn_rate'] = setting.get('learn_rate', None) or learn_rate
+
+        if use_images:
+            shapes['postMedia'] = {'model': create_cnn_image.__name__,
+                                   'input_shape': train_X[key_image].shape[1:],
+                                   'layers': [128]}
+
+        logger.info('use setting: %s' % json.dumps(setting).replace(' ', ''))
+        logger.info('use shapes: %s' % json.dumps(shapes).replace(' ', ''))
+
+        model = create_model(embedding_weights=get_embeddings(nlp.vocab), shapes=shapes, setting=setting)
 
         callbacks = [
             EarlyStopping(monitor='val_mean_squared_error', min_delta=1e-4, patience=10, verbose=1),
