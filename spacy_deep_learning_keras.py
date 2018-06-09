@@ -22,7 +22,7 @@ import thinc.extra.datasets
 # tensorflow: install
 # keras: install
 from keras import Model, Input, applications
-from keras.callbacks import EarlyStopping
+from keras.callbacks import EarlyStopping, ModelCheckpoint
 from keras.layers import LSTM, Dense, Embedding, Bidirectional, concatenate, Dropout, SpatialDropout1D, \
     BatchNormalization, Conv1D, GlobalMaxPooling1D, MaxPooling1D, GlobalAveragePooling1D, Reshape
 from keras.layers import TimeDistributed
@@ -412,9 +412,9 @@ def get_nlp():
 
 
 @plac.annotations(
-    train_dir=("Location of training file or directory"),
-    dev_dir=("Location of development file or directory"),
     model_dir=("Location of output model directory",),
+    dev_dir=("Location of development/evaluation file or directory"),
+    train_dir=("Location of training file or directory"),
     is_runtime=("Demonstrate run-time usage", "flag", "r", bool),
     dropout=("Dropout", "option", "d", float),
     learn_rate=("Learn rate", "option", "e", float),
@@ -446,15 +446,17 @@ def main(model_dir=None, dev_dir=None, train_dir=None,
          nb_epoch=100, batch_size=100, nr_examples=-1, nb_threads_parse=3, max_entries=-1, model_type='lstm',
          use_images=False, image_embedding_function='vgg16.VGG16'):  # Training params
     key_image = 'postMedia'
+    dev_dir = pathlib.Path(dev_dir)
     if use_images:
         logger.info('use image data')
     if model_dir is not None:
         model_dir = pathlib.Path(model_dir)
+        model_dir.mkdir(parents=True, exist_ok=True)
     if train_dir is None or dev_dir is None:
         raise NotImplementedError('dataset fetching not implemented')
         imdb_data = thinc.extra.datasets.imdb()
     if is_runtime:
-        dev_records, _ = read_data(pathlib.Path(dev_dir))
+        dev_records, _ = read_data(dev_dir)
         nlp = get_nlp()
         logger.info("Loading model...")
         model, config = load_model(model_dir, nlp)
@@ -464,10 +466,12 @@ def main(model_dir=None, dev_dir=None, train_dir=None,
         dev_X, dev_labels = records_to_features(records=dev_records, nlp=nlp, shapes=shapes,
                                                 nb_threads_parse=nb_threads_parse, max_entries=max_entries,
                                                 key_image=key_image if use_images else None,
-                                                data_dir=pathlib.Path(dev_dir),
+                                                data_dir=dev_dir,
                                                 # TODO: depend on model?
                                                 image_model_function_name=image_embedding_function)
     else:
+        assert train_dir is not None, 'train_dir is not set'
+        train_dir = pathlib.Path(train_dir)
         # some defaults...
         if shapes is None or shapes == '':
             lstm_shapes = {
@@ -476,7 +480,6 @@ def main(model_dir=None, dev_dir=None, train_dir=None,
                 'targetTitle': {'model': create_lstm.__name__, 'max_length': 50, 'nr_hidden': 30},
                 'targetKeywords': {'model': create_lstm.__name__, 'max_length': 100, 'nr_hidden': 30},
                 'targetDescription': {'model': create_lstm.__name__, 'max_length': 100, 'nr_hidden': 30},
-                #'postMedia': {'model': create_cnn_image.__name__, 'input_shape': None}
             }
             #lstm_shapes = {
             #    'postText,targetTitle,targetDescription,targetParagraphs,targetKeywords':
@@ -491,7 +494,6 @@ def main(model_dir=None, dev_dir=None, train_dir=None,
                 'targetTitle': {'model': create_cnn.__name__, 'max_length': 50, 'filter_length': 2, 'nb_filter': 50},
                 'targetKeywords': {'model': create_cnn.__name__, 'max_length': 100, 'filter_length': 1, 'nb_filter': 50},
                 'targetDescription': {'model': create_cnn.__name__, 'max_length': 100, 'filter_length': 5, 'nb_filter': 50},
-                #'postMedia': {'model': create_cnn_image.__name__, 'input_shape': None, 'layers': [128]}
             }
 
             if model_type == 'lstm':
@@ -511,29 +513,32 @@ def main(model_dir=None, dev_dir=None, train_dir=None,
                                  % (model_type, ' '.join(['lstm', 'cnn', 'cnn2', 'lstm_stacked'])))
 
         logger.info("Read data")
-        train_records, _ = read_data(pathlib.Path(train_dir), limit=nr_examples, dont_shuffle=True)
-        dev_records, _ = read_data(pathlib.Path(dev_dir), limit=nr_examples, dont_shuffle=True)
+        train_records, _ = read_data(train_dir, limit=nr_examples, dont_shuffle=True)
+        dev_records, _ = read_data(dev_dir, limit=nr_examples, dont_shuffle=True)
 
         nlp = get_nlp()
 
         train_X, train_labels = records_to_features(records=train_records, nlp=nlp, shapes=lstm_shapes,
                                                     nb_threads_parse=nb_threads_parse, max_entries=max_entries,
-                                                    key_image=key_image if use_images else None, data_dir=pathlib.Path(train_dir),
+                                                    key_image=key_image if use_images else None, data_dir=train_dir,
                                                     image_model_function_name=image_embedding_function)
         dev_X, dev_labels = records_to_features(records=dev_records, nlp=nlp, shapes=lstm_shapes,
                                                 nb_threads_parse=nb_threads_parse, max_entries=max_entries,
-                                                key_image=key_image if use_images else None, data_dir=pathlib.Path(dev_dir),
+                                                key_image=key_image if use_images else None, data_dir=dev_dir,
                                                 image_model_function_name=image_embedding_function)
 
         if setting is None or setting == '':
+            # default setting
             setting = {'final_layers': [512]}
         else:
             setting = json.loads(setting)
 
+        # set dropout and learning rate if not already in setting
         setting['dropout'] = setting.get('dropout', None) or dropout
         setting['learn_rate'] = setting.get('learn_rate', None) or learn_rate
 
-        if use_images:
+        # set image data settings if not given
+        if use_images and 'postMedia' not in shapes:
             shapes['postMedia'] = {'model': create_cnn_image.__name__,
                                    'input_shape': train_X[key_image].shape[1:],
                                    'layers': [128]}
@@ -548,15 +553,23 @@ def main(model_dir=None, dev_dir=None, train_dir=None,
             #keras.callbacks.ReduceLROnPlateau(monitor='loss', factor=0.1, epsilon=0.0001, patience=2, cooldown=1,
             #                                  verbose=1)
         ]
+        if model_dir is not None:
+            callbacks.append(ModelCheckpoint(filepath=str(model_dir / 'model'), monitor='val_mean_squared_error',
+                                             verbose=0, save_best_only=True, save_weights_only=True, mode='auto',
+                                             period=1))
 
         model.fit(as_list(train_X), train_labels,
                   validation_data=(as_list(dev_X), dev_labels),
                   epochs=nb_epoch, batch_size=batch_size, callbacks=callbacks)
 
-        weights = model.get_weights()
         if model_dir is not None:
+            # remove embeddings from saved model (already included in spacy model)
+            # reload best weights
+            model.load_weights(str(model_dir / 'model'))
+            weights = model.get_weights()
             with (model_dir / 'model').open('wb') as file_:
                 pickle.dump(weights[1:], file_)
+            # save model config
             with (model_dir / 'config.json').open('w') as file_:
                 file_.write(model.to_json())
 
