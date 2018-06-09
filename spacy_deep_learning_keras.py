@@ -439,7 +439,7 @@ def get_nlp():
     #               "postMedia":
     #                   {"model":"create_cnn_image", "input_shape":[1,5,5,1536],"layers":[128]}}
 )
-def main(model_dir=None, train_dir=None, dev_dir=None,
+def main(model_dir=None, dev_dir=None, train_dir=None,
          is_runtime=False,
          shapes=None,  # Shape
          dropout=0.5, learn_rate=0.001, setting=None, # General NN config (via individual parameters or setting dict)
