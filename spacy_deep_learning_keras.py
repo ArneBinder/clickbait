@@ -277,7 +277,7 @@ def create_cnn2(input, shape, settings):
 
 def create_cnn_image(input, shape, settings):
     x = input
-    if len(shape.get('layers', [])):
+    if len(shape.get('layers', [])) == 0:
         logger.warning('no images layers defined (layers does not contain any layer size), '
                        'but image data is used.')
     for size in shape['layers']:
@@ -322,7 +322,7 @@ def create_model(embedding_weights, shapes, setting):
 
     singles = {k: globals()[shapes[k]['model']](input=embedded[k], shape=shapes[k], settings=setting) for i, k in enumerate(keys)}
     joint = concatenate(as_list(singles))
-    if len(setting.get('final_layers', [])):
+    if len(setting.get('final_layers', [])) == 0:
         logger.warning('no final layers defined (final_layers does not contain any layer size)')
     for size in setting['final_layers']:
         joint = Dense(size, activation='relu')(joint)
