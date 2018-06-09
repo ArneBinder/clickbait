@@ -453,9 +453,9 @@ def main(model_dir=None, dev_dir=None, train_dir=None,
     if model_dir is not None:
         model_dir = pathlib.Path(model_dir)
         model_dir.mkdir(parents=True, exist_ok=True)
-    if train_dir is None or dev_dir is None:
-        raise NotImplementedError('dataset fetching not implemented')
-        imdb_data = thinc.extra.datasets.imdb()
+    #if train_dir is None or dev_dir is None:
+    #    raise NotImplementedError('dataset fetching not implemented')
+    #    imdb_data = thinc.extra.datasets.imdb()
     if is_runtime:
         dev_records, _ = read_data(dev_dir)
         nlp = get_nlp()
