@@ -446,6 +446,7 @@ def main(model_dir=None, dev_dir=None, train_dir=None,
          nb_epoch=100, batch_size=100, nr_examples=-1, nb_threads_parse=3, max_entries=-1, model_type='lstm',
          use_images=False, image_embedding_function='vgg16.VGG16'):  # Training params
     key_image = 'postMedia'
+    assert dev_dir is not None, 'dev_dir is not set'
     dev_dir = pathlib.Path(dev_dir)
     if use_images:
         logger.info('use image data')
@@ -459,6 +460,7 @@ def main(model_dir=None, dev_dir=None, train_dir=None,
         dev_records, _ = read_data(dev_dir)
         nlp = get_nlp()
         logger.info("Loading model...")
+        assert model_dir is not None, 'model_dir not set'
         model, config = load_model(model_dir, nlp)
         shapes = get_max_lengths_from_config(config)
 
