@@ -563,7 +563,7 @@ def main(model_dir=None, dev_dir=None, train_dir=None,
     # finally evaluate and write out dev results
     logger.info('predict...')
     y = model.predict(as_list(dev_X))
-    with (model_dir / 'predictions.jsonl').open('w') as file_:
+    with (dev_dir / 'predictions.jsonl').open('w') as file_:
         file_.writelines(json.dumps({'id': record['id'], 'clickbaitScore': float(y[i][0])}) + '\n'
                          for i, record in enumerate(dev_records))
 
