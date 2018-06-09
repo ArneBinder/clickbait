@@ -551,7 +551,7 @@ def main(model_dir=None, dev_dir=None, train_dir=None,
         model = create_model(embedding_weights=get_embeddings(nlp.vocab), shapes=shapes, setting=setting)
 
         callbacks = [
-            EarlyStopping(monitor='val_mean_squared_error', min_delta=1e-4, patience=10, verbose=1),
+            EarlyStopping(monitor='val_mean_squared_error', min_delta=1e-4, patience=5, verbose=1),
             #keras.callbacks.ReduceLROnPlateau(monitor='loss', factor=0.1, epsilon=0.0001, patience=2, cooldown=1,
             #                                  verbose=1)
         ]
