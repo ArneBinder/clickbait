@@ -8,3 +8,4 @@ tensorflow
 plac
 scikit-learn
 pillow
+pathlib
