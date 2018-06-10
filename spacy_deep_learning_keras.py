@@ -415,6 +415,7 @@ def get_nlp():
     model_dir=("Location of output model directory",),
     dev_dir=("Location of development/evaluation file or directory"),
     train_dir=("Location of training file or directory"),
+    eval_out=("evaluation output file", "option", None, str),
     is_runtime=("Demonstrate run-time usage", "flag", "r", bool),
     dropout=("Dropout", "option", "d", float),
     learn_rate=("Learn rate", "option", "e", float),
@@ -424,6 +425,7 @@ def get_nlp():
     nb_threads_parse=("Number of threads used for parsing", "option", "p", int),
     max_entries=("Maximum number of entries that are considered for multi entry fields (e.g. targetParagraphs)",
                  "option", "x", int),
+    early_stopping_window=("early stopping patience", "option", None, int),
     model_type=("one of: lstm, cnn", "option", "m", str),
     use_images=("use image data", "flag", "g", bool),
     image_embedding_function=("the imagenet model function (from keras.applications) used to embed the images. "
@@ -439,10 +441,11 @@ def get_nlp():
     #               "postMedia":
     #                   {"model":"create_cnn_image", "input_shape":[1,5,5,1536],"layers":[128]}}
 )
-def main(model_dir=None, dev_dir=None, train_dir=None,
+def main(model_dir=None, dev_dir=None, train_dir=None, eval_out=None,
          is_runtime=False,
          shapes=None,  # Shape
          dropout=0.5, learn_rate=0.001, setting=None, # General NN config (via individual parameters or setting dict)
+         early_stopping_window=5,
          nb_epoch=100, batch_size=100, nr_examples=-1, nb_threads_parse=3, max_entries=-1, model_type='lstm',
          use_images=False, image_embedding_function='vgg16.VGG16'):  # Training params
     key_image = 'postMedia'
@@ -456,6 +459,12 @@ def main(model_dir=None, dev_dir=None, train_dir=None,
     #if train_dir is None or dev_dir is None:
     #    raise NotImplementedError('dataset fetching not implemented')
     #    imdb_data = thinc.extra.datasets.imdb()
+
+    if eval_out is None:
+        eval_out = dev_dir / 'predictions.jsonl'
+    else:
+        eval_out = pathlib.Path(eval_out)
+
     if is_runtime:
         dev_records, _ = read_data(dev_dir)
         nlp = get_nlp()
@@ -551,7 +560,7 @@ def main(model_dir=None, dev_dir=None, train_dir=None,
         model = create_model(embedding_weights=get_embeddings(nlp.vocab), shapes=shapes, setting=setting)
 
         callbacks = [
-            EarlyStopping(monitor='val_mean_squared_error', min_delta=1e-4, patience=5, verbose=1),
+            EarlyStopping(monitor='val_mean_squared_error', min_delta=1e-4, patience=early_stopping_window, verbose=1),
             #keras.callbacks.ReduceLROnPlateau(monitor='loss', factor=0.1, epsilon=0.0001, patience=2, cooldown=1,
             #                                  verbose=1)
         ]
@@ -578,7 +587,7 @@ def main(model_dir=None, dev_dir=None, train_dir=None,
     # finally evaluate and write out dev results
     logger.info('predict...')
     y = model.predict(as_list(dev_X))
-    with (dev_dir / 'predictions.jsonl').open('w') as file_:
+    with eval_out.open('w') as file_:
         file_.writelines(json.dumps({'id': str(record['id']), 'clickbaitScore': float(y[i][0])}) + '\n'
                          for i, record in enumerate(dev_records))
 
