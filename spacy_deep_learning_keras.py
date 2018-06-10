@@ -529,11 +529,11 @@ def main(model_dir=None, dev_dir=None, train_dir=None, eval_out=None,
 
         nlp = get_nlp()
 
-        train_X, train_labels = records_to_features(records=train_records, nlp=nlp, shapes=lstm_shapes,
+        train_X, train_labels = records_to_features(records=train_records, nlp=nlp, shapes=shapes,
                                                     nb_threads_parse=nb_threads_parse, max_entries=max_entries,
                                                     key_image=key_image if use_images else None, data_dir=train_dir,
                                                     image_model_function_name=image_embedding_function)
-        dev_X, dev_labels = records_to_features(records=dev_records, nlp=nlp, shapes=lstm_shapes,
+        dev_X, dev_labels = records_to_features(records=dev_records, nlp=nlp, shapes=shapes,
                                                 nb_threads_parse=nb_threads_parse, max_entries=max_entries,
                                                 key_image=key_image if use_images else None, data_dir=dev_dir,
                                                 image_model_function_name=image_embedding_function)
