@@ -649,10 +649,10 @@ def train(model_dir, train_dir, dev_dir,  # fs locations
     setting['learn_rate'] = setting.get('learn_rate', None) or learn_rate
 
     # set image data settings if not given
-    if use_images and 'postMedia' not in feature_shapes:
-        feature_shapes['postMedia'] = {'model': create_cnn_image.__name__,
-                               'input_shape': train_X[KEY_IMAGE].shape[1:],
-                               'layers': [128]}
+    if use_images:
+        if 'postMedia' not in feature_shapes:
+            feature_shapes['postMedia'] = {'model': create_cnn_image.__name__, 'layers': [128]}
+        feature_shapes['postMedia']['input_shape'] = train_X[KEY_IMAGE].shape[1:]
 
     logger.info('use setting: %s' % json.dumps(setting).replace(' ', ''))
     logger.info('use shapes: %s' % json.dumps(feature_shapes).replace(' ', ''))
