@@ -716,6 +716,9 @@ def main(mode, parameter_file=None, *args):
             f.flush()
             for parameters_str in parameters_list:
                 parameters_str = parameters_str.strip()
+                # skip empty lines and comment lines
+                if parameters_str == '' or parameters_str.startswith('#'):
+                    continue
                 logger.info('EXECUTE RUN: %s\n' % parameters_str.replace('--', '\n--'))
                 parameters = parameters_str.strip().split() + list(args)
                 metric_name, metric_value = plac.call(train, parameters)
