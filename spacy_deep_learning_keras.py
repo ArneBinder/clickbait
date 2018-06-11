@@ -633,19 +633,22 @@ def train(model_dir, train_dir, dev_dir,  # fs locations
 
     model = create_model(embedding_weights=get_embeddings(nlp.vocab), feature_shapes=feature_shapes, setting=setting)
 
+    metric = 'val_mean_squared_error'
+    metric_best_func = min
     callbacks = [
-        EarlyStopping(monitor='val_mean_squared_error', min_delta=1e-4, patience=early_stopping_window, verbose=1),
+        EarlyStopping(monitor=metric, min_delta=1e-4, patience=early_stopping_window, verbose=1),
         #keras.callbacks.ReduceLROnPlateau(monitor='loss', factor=0.1, epsilon=0.0001, patience=2, cooldown=1,
         #                                  verbose=1)
     ]
     if model_dir is not None:
-        callbacks.append(ModelCheckpoint(filepath=str(model_dir / 'model_weights'), monitor='val_mean_squared_error',
+        callbacks.append(ModelCheckpoint(filepath=str(model_dir / 'model_weights'), monitor=metric,
                                          verbose=0, save_best_only=True, save_weights_only=True, mode='auto',
                                          period=1))
         callbacks.append(CSVLogger(str(model_dir / "log.tsv"), append=True, separator='\t'))
 
-    model.fit(as_list(train_X), train_labels, validation_data=(as_list(dev_X), dev_labels),
-              epochs=nb_epoch, batch_size=batch_size, callbacks=callbacks)
+    history_callback = model.fit(as_list(train_X), train_labels, validation_data=(as_list(dev_X), dev_labels),
+                                 epochs=nb_epoch, batch_size=batch_size, callbacks=callbacks)
+    metric_history = history_callback.history[metric]
 
     if model_dir is not None:
         logger.info('remove embeddings from model...')
@@ -661,6 +664,7 @@ def train(model_dir, train_dir, dev_dir,  # fs locations
 
     if logger_fh is not None:
         logger.removeHandler(logger_fh)
+    return metric, metric_best_func(metric_history)
 
 
 @plac.annotations(
@@ -679,10 +683,18 @@ def main(mode, parameter_file=None, *args):
         logger.info('GENERAL PARAMETERS:%s\n' % ' '.join(args).replace('--', '\n--'))
         with open(parameter_file) as f:
             parameters_list = f.readlines()
-        for parameters_str in parameters_list:
-            logger.info('EXECUTE RUN: %s\n' % parameters_str.replace('--', '\n--'))
-            parameters = parameters_str.strip().split() + list(args)
-            plac.call(train, parameters)
+
+        scores_fn = pathlib.Path(parameter_file).parent / 'scores.txt'
+        with open(scores_fn, 'w') as f:
+            f.write('# general_parameters: %s\n' % ' '.join(args))
+            f.flush()
+            for parameters_str in parameters_list:
+                parameters_str = parameters_str.strip()
+                logger.info('EXECUTE RUN: %s\n' % parameters_str.replace('--', '\n--'))
+                parameters = parameters_str.strip().split() + list(args)
+                metric_name, metric_value = plac.call(train, parameters)
+                f.write('%s:\t%7.4f\tparameters: %s\n' % (metric_name, metric_value, parameters_str))
+                f.flush()
 
 
 if __name__ == '__main__':
