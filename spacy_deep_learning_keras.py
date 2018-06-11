@@ -716,16 +716,24 @@ def main(mode, parameter_file=None, *args):
         with open(scores_fn, m) as f:
             f.write('#time: %s\tgeneral_parameters: %s\n' % (datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'), ' '.join(args)))
             f.flush()
+            n = 0
             for parameters_str in parameters_list:
                 parameters_str = parameters_str.strip()
                 # skip empty lines and comment lines
                 if parameters_str == '' or parameters_str.startswith('#'):
                     continue
-                logger.info('EXECUTE RUN: %s\n' % parameters_str.replace('--', '\n--'))
+                logger.info('EXECUTE RUN %i: %s\n' % (n, parameters_str.replace('--', '\n--')))
                 parameters = parameters_str.strip().split() + list(args)
-                metric_name, metric_value = plac.call(train, parameters)
-                f.write('time: %s\t%s:\t%7.4f\tparameters: %s\n' % (datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'), metric_name, metric_value, parameters_str))
+                try:
+                    metric_name, metric_value = plac.call(train, parameters)
+                    f.write('time: %s\t%s:\t%7.4f\tparameters: %s\n'
+                            % (datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'), metric_name, metric_value,
+                               parameters_str))
+                except Exception as e:
+                    f.write('time: %s\tERROR:\t%s\tparameters: %s\n'
+                            % (datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'), str(e), parameters_str))
                 f.flush()
+                n += 1
 
 
 if __name__ == '__main__':
