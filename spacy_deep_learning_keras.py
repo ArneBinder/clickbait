@@ -21,7 +21,7 @@ import spacy  # install
 import thinc.extra.datasets
 # tensorflow: install
 # keras: install
-from keras import Model, Input, applications
+from keras import Model, Input, applications, backend
 from keras.callbacks import EarlyStopping, ModelCheckpoint, CSVLogger
 from keras.layers import LSTM, Dense, Embedding, Bidirectional, concatenate, Dropout, SpatialDropout1D, \
     BatchNormalization, Conv1D, GlobalMaxPooling1D, MaxPooling1D, GlobalAveragePooling1D, Reshape
@@ -30,6 +30,7 @@ from keras.models import model_from_json
 from keras.optimizers import Adam
 from keras.preprocessing import image
 from spacy.compat import pickle
+import tensorflow as tf
 
 SPACY_MODEL = 'en_vectors_web_lg'
 
@@ -315,12 +316,12 @@ def create_inputs_and_embedded(embedding_weights, input_shapes):
     return inputs_text, embedded_text
 
 
-def create_model(embedding_weights, shapes, setting):
-    keys = sorted(list(shapes.keys()))
+def create_model(embedding_weights, feature_shapes, setting):
+    keys = sorted(list(feature_shapes.keys()))
 
-    inputs, embedded = create_inputs_and_embedded(embedding_weights=embedding_weights, input_shapes=shapes)
+    inputs, embedded = create_inputs_and_embedded(embedding_weights=embedding_weights, input_shapes=feature_shapes)
 
-    singles = {k: globals()[shapes[k]['model']](input=embedded[k], shape=shapes[k], settings=setting) for i, k in enumerate(keys)}
+    singles = {k: globals()[feature_shapes[k]['model']](input=embedded[k], shape=feature_shapes[k], settings=setting) for i, k in enumerate(keys)}
     joint = concatenate(as_list(singles))
     if len(setting.get('final_layers', [])) == 0:
         logger.warning('no final layers defined (final_layers does not contain any layer size)')
@@ -422,6 +423,7 @@ def get_nlp():
     nb_epoch=("Number of training epochs", "option", "i", int),
     batch_size=("Size of minibatches for training LSTM", "option", "b", int),
     nr_examples=("Limit to N examples", "option", "n", int),
+    nb_threads=("Number of threads used for training/prediction", "option", "t", int),
     nb_threads_parse=("Number of threads used for parsing", "option", "p", int),
     max_entries=("Maximum number of entries that are considered for multi entry fields (e.g. targetParagraphs)",
                  "option", "x", int),
@@ -431,24 +433,33 @@ def get_nlp():
     image_embedding_function=("the imagenet model function (from keras.applications) used to embed the images. "
                               "Has to be in the format: <model_name>.<function_name>, e.g. vgg16.VGG16",
                               "option", "f", str),
-    shapes=("a json dict defining the shapes of the final_layers, and, eventually, dropout and learning_rate",
-            "option", None, str),
+    setting=("a json dict defining the shapes of the final_layers, and, eventually, dropout and learning_rate",
+             "option", None, str),
     # e.g. setting: {"final_layers":[512],"dropout":0.5,"learn_rate":0.001}
-    setting=("a json dict defining parameters for submodules for individual (eventually concatenated by ',') textual "
-             "and image features", "option", None, str),
+    feature_shapes=("a json dict defining parameters for submodules for individual (eventually concatenated by ',') "
+                    "textual and image features", "option", None, str),
     # e.g. shapes: {"postText,targetTitle,targetDescription,targetParagraphs,targetKeywords":
     #                   {"model":"create_lstm", "max_length":500,"nr_hidden":128},
     #               "postMedia":
     #                   {"model":"create_cnn_image", "input_shape":[1,5,5,1536],"layers":[128]}}
 )
-def main(model_dir=None, dev_dir=None, train_dir=None, eval_out=None,
+def main(model_dir=None, dev_dir=None, train_dir=None, eval_out=None,  # fs locations
          is_runtime=False,
-         shapes=None,  # Shape
-         dropout=0.5, learn_rate=0.001, setting=None, # General NN config (via individual parameters or setting dict)
-         early_stopping_window=5,
-         nb_epoch=100, batch_size=100, nr_examples=-1, nb_threads_parse=3, max_entries=-1, model_type='lstm',
-         use_images=False, image_embedding_function='vgg16.VGG16'):  # Training params
-    key_image = 'postMedia'
+         model_type='lstm', feature_shapes=None,  # neural network type(s): overall or defined per feature via shapes
+         nr_examples=-1, max_entries=-1,  # restrict data to a subset
+         use_images=False, image_embedding_function='vgg16.VGG16',  # image data
+         dropout=0.5, learn_rate=0.001, setting=None,  # General NN config (via individual parameters or setting dict)
+         nb_epoch=100, batch_size=100, early_stopping_window=5,   # Training params
+         nb_threads=1, nb_threads_parse=10  # performance: resource restrictions
+         ):
+
+    if nb_threads > 0:
+        # restrict number of tensorflow threads
+        session_conf = tf.ConfigProto(
+            intra_op_parallelism_threads=nb_threads,
+            inter_op_parallelism_threads=nb_threads)
+        backend.set_session(backend.tf.Session(config=session_conf))
+
     assert dev_dir is not None, 'dev_dir is not set'
     dev_dir = pathlib.Path(dev_dir)
     if use_images:
@@ -462,18 +473,19 @@ def main(model_dir=None, dev_dir=None, train_dir=None, eval_out=None,
         logger_fh.setFormatter(logging.Formatter('%(asctime)s %(levelname)s %(message)s'))
         logger.addHandler(logger_fh)
 
+    KEY_IMAGE = 'postMedia'
     if is_runtime:
         dev_records, _ = read_data(dev_dir)
         nlp = get_nlp()
         logger.info("Loading model...")
         assert model_dir is not None, 'model_dir not set'
         model, config = load_model(model_dir, nlp)
-        shapes = get_max_lengths_from_config(config)
+        feature_shapes = get_max_lengths_from_config(config)
 
-        use_images = key_image in shapes.keys()
-        dev_X, dev_labels = records_to_features(records=dev_records, nlp=nlp, shapes=shapes,
+        use_images = KEY_IMAGE in feature_shapes.keys()
+        dev_X, dev_labels = records_to_features(records=dev_records, nlp=nlp, shapes=feature_shapes,
                                                 nb_threads_parse=nb_threads_parse, max_entries=max_entries,
-                                                key_image=key_image if use_images else None,
+                                                key_image=KEY_IMAGE if use_images else None,
                                                 data_dir=dev_dir,
                                                 # TODO: depend on model?
                                                 image_model_function_name=image_embedding_function)
@@ -481,7 +493,7 @@ def main(model_dir=None, dev_dir=None, train_dir=None, eval_out=None,
         assert train_dir is not None, 'train_dir is not set'
         train_dir = pathlib.Path(train_dir)
         # some defaults...
-        if shapes is None or shapes == '':
+        if feature_shapes is None or feature_shapes == '':
             lstm_shapes = {
                 'targetParagraphs': {'model': create_lstm.__name__, 'max_length': 500, 'nr_hidden': 64},
                 'postText': {'model': create_lstm.__name__, 'max_length': 50, 'nr_hidden': 30},
@@ -506,10 +518,10 @@ def main(model_dir=None, dev_dir=None, train_dir=None, eval_out=None,
 
             if model_type == 'lstm':
                 logger.info('use lstm model')
-                shapes = lstm_shapes
+                feature_shapes = lstm_shapes
             elif model_type == 'cnn':
                 logger.info('use cnn model')
-                shapes = cnn_shapes
+                feature_shapes = cnn_shapes
             #elif model_type == 'cnn2':
             #    logger.info('use cnn2 model')
             #    shapes = cnn_shapes
@@ -526,13 +538,13 @@ def main(model_dir=None, dev_dir=None, train_dir=None, eval_out=None,
 
         nlp = get_nlp()
 
-        train_X, train_labels = records_to_features(records=train_records, nlp=nlp, shapes=shapes,
+        train_X, train_labels = records_to_features(records=train_records, nlp=nlp, shapes=feature_shapes,
                                                     nb_threads_parse=nb_threads_parse, max_entries=max_entries,
-                                                    key_image=key_image if use_images else None, data_dir=train_dir,
+                                                    key_image=KEY_IMAGE if use_images else None, data_dir=train_dir,
                                                     image_model_function_name=image_embedding_function)
-        dev_X, dev_labels = records_to_features(records=dev_records, nlp=nlp, shapes=shapes,
+        dev_X, dev_labels = records_to_features(records=dev_records, nlp=nlp, shapes=feature_shapes,
                                                 nb_threads_parse=nb_threads_parse, max_entries=max_entries,
-                                                key_image=key_image if use_images else None, data_dir=dev_dir,
+                                                key_image=KEY_IMAGE if use_images else None, data_dir=dev_dir,
                                                 image_model_function_name=image_embedding_function)
 
         if setting is None or setting == '':
@@ -546,15 +558,15 @@ def main(model_dir=None, dev_dir=None, train_dir=None, eval_out=None,
         setting['learn_rate'] = setting.get('learn_rate', None) or learn_rate
 
         # set image data settings if not given
-        if use_images and 'postMedia' not in shapes:
-            shapes['postMedia'] = {'model': create_cnn_image.__name__,
-                                   'input_shape': train_X[key_image].shape[1:],
+        if use_images and 'postMedia' not in feature_shapes:
+            feature_shapes['postMedia'] = {'model': create_cnn_image.__name__,
+                                   'input_shape': train_X[KEY_IMAGE].shape[1:],
                                    'layers': [128]}
 
         logger.info('use setting: %s' % json.dumps(setting).replace(' ', ''))
-        logger.info('use shapes: %s' % json.dumps(shapes).replace(' ', ''))
+        logger.info('use shapes: %s' % json.dumps(feature_shapes).replace(' ', ''))
 
-        model = create_model(embedding_weights=get_embeddings(nlp.vocab), shapes=shapes, setting=setting)
+        model = create_model(embedding_weights=get_embeddings(nlp.vocab), feature_shapes=feature_shapes, setting=setting)
 
         callbacks = [
             EarlyStopping(monitor='val_mean_squared_error', min_delta=1e-4, patience=early_stopping_window, verbose=1),
@@ -567,8 +579,8 @@ def main(model_dir=None, dev_dir=None, train_dir=None, eval_out=None,
                                              period=1))
             callbacks.append(CSVLogger(str(model_dir / "log.tsv"), append=True, separator='\t'))
 
-            model.fit(as_list(train_X), train_labels, validation_data=(as_list(dev_X), dev_labels),
-                      epochs=nb_epoch, batch_size=batch_size, callbacks=callbacks)
+        model.fit(as_list(train_X), train_labels, validation_data=(as_list(dev_X), dev_labels),
+                  epochs=nb_epoch, batch_size=batch_size, callbacks=callbacks)
 
         if model_dir is not None:
             # remove embeddings from saved model (already included in spacy model)
