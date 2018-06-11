@@ -415,7 +415,7 @@ def get_nlp():
     model_dir=("Location of output model directory",),
     dev_dir=("Location of development/evaluation file or directory"),
     train_dir=("Location of training file or directory"),
-    eval_out=("evaluation output file", "option", None, str),
+    eval_out=("evaluation output file", "option", "v", str),
     is_runtime=("Demonstrate run-time usage", "flag", "r", bool),
     dropout=("Dropout", "option", "d", float),
     learn_rate=("Learn rate", "option", "e", float),
