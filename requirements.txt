@@ -1,11 +1,19 @@
-spacy>=2.0.0
-# spacy model including vectors
-https://github.com/explosion/spacy-models/releases/download/en_vectors_web_lg-2.0.0/en_vectors_web_lg-2.0.0.tar.gz#en_vectors_web_lg
+### to install into a conda environment (python=3):
+#   0) switch into conda environment
+#   1) install requirements via conda line by line (to avoid canceling on any error) by executing:
+#       while read requirement; do conda install --yes $requirement; done < requirements.txt
+#   2) install spacy model manually, execute:
+#       pip install https://github.com/explosion/spacy-models/releases/download/en_vectors_web_lg-2.0.0/en_vectors_web_lg-2.0.0.tar.gz#en_vectors_web_lg
+
+tensorflow=1.4
+spacy=2
 keras
+scikit-learn
 numpy
 cytoolz
-tensorflow
 plac
-scikit-learn
 pillow
 pathlib
+
+# spacy model including vectors
+https://github.com/explosion/spacy-models/releases/download/en_vectors_web_lg-2.0.0/en_vectors_web_lg-2.0.0.tar.gz#en_vectors_web_lg
