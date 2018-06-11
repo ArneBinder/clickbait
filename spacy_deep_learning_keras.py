@@ -9,6 +9,7 @@ pip install keras==2.0.9
 
 Compatible with: spaCy v2.0.0+
 """
+import datetime
 import json
 import logging
 import pathlib
@@ -711,8 +712,9 @@ def main(mode, parameter_file=None, *args):
             parameters_list = f.readlines()
 
         scores_fn = pathlib.Path(parameter_file).parent / 'scores.txt'
-        with open(scores_fn, 'w') as f:
-            f.write('# general_parameters: %s\n' % ' '.join(args))
+        m = 'a' if scores_fn.exists() else 'w'
+        with open(scores_fn, m) as f:
+            f.write('#time: %s\tgeneral_parameters: %s\n' % (datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'), ' '.join(args)))
             f.flush()
             for parameters_str in parameters_list:
                 parameters_str = parameters_str.strip()
@@ -722,7 +724,7 @@ def main(mode, parameter_file=None, *args):
                 logger.info('EXECUTE RUN: %s\n' % parameters_str.replace('--', '\n--'))
                 parameters = parameters_str.strip().split() + list(args)
                 metric_name, metric_value = plac.call(train, parameters)
-                f.write('%s:\t%7.4f\tparameters: %s\n' % (metric_name, metric_value, parameters_str))
+                f.write('time: %s\t%s:\t%7.4f\tparameters: %s\n' % (datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'), metric_name, metric_value, parameters_str))
                 f.flush()
 
 
