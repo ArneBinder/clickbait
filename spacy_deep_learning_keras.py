@@ -22,7 +22,7 @@ import thinc.extra.datasets
 # tensorflow: install
 # keras: install
 from keras import Model, Input, applications
-from keras.callbacks import EarlyStopping, ModelCheckpoint
+from keras.callbacks import EarlyStopping, ModelCheckpoint, CSVLogger
 from keras.layers import LSTM, Dense, Embedding, Bidirectional, concatenate, Dropout, SpatialDropout1D, \
     BatchNormalization, Conv1D, GlobalMaxPooling1D, MaxPooling1D, GlobalAveragePooling1D, Reshape
 from keras.layers import TimeDistributed
@@ -456,9 +456,11 @@ def main(model_dir=None, dev_dir=None, train_dir=None, eval_out=None,
     if model_dir is not None:
         model_dir = pathlib.Path(model_dir)
         model_dir.mkdir(parents=True, exist_ok=True)
-    #if train_dir is None or dev_dir is None:
-    #    raise NotImplementedError('dataset fetching not implemented')
-    #    imdb_data = thinc.extra.datasets.imdb()
+
+        logger_fh = logging.FileHandler((model_dir / 'log.txt'))
+        logger_fh.setLevel(logging.DEBUG)
+        logger_fh.setFormatter(logging.Formatter('%(asctime)s %(levelname)s %(message)s'))
+        logger.addHandler(logger_fh)
 
     if is_runtime:
         dev_records, _ = read_data(dev_dir)
@@ -563,10 +565,10 @@ def main(model_dir=None, dev_dir=None, train_dir=None, eval_out=None,
             callbacks.append(ModelCheckpoint(filepath=str(model_dir / 'model'), monitor='val_mean_squared_error',
                                              verbose=0, save_best_only=True, save_weights_only=True, mode='auto',
                                              period=1))
+            callbacks.append(CSVLogger(str(model_dir / "log.tsv"), append=True, separator='\t'))
 
-        model.fit(as_list(train_X), train_labels,
-                  validation_data=(as_list(dev_X), dev_labels),
-                  epochs=nb_epoch, batch_size=batch_size, callbacks=callbacks)
+            model.fit(as_list(train_X), train_labels, validation_data=(as_list(dev_X), dev_labels),
+                      epochs=nb_epoch, batch_size=batch_size, callbacks=callbacks)
 
         if model_dir is not None:
             # remove embeddings from saved model (already included in spacy model)
