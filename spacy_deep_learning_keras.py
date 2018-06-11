@@ -42,6 +42,8 @@ logger_streamhandler.setLevel(logging.INFO)
 logger_streamhandler.setFormatter(logging.Formatter('%(asctime)s %(levelname)s %(message)s'))
 logger.addHandler(logger_streamhandler)
 
+cache = {}
+
 
 def load_model(path, nlp):
     with (path / 'model_config.json').open() as file_:
@@ -157,8 +159,10 @@ def get_image_features(records, ids, key_image, data_dir, image_model_function_n
     ids_mapping = {_id: i for i, _id in enumerate(ids)}
     model = None
 
-    fn_images_embeddings = data_dir / ('images.%s.embedded.npy' % model_function.__name__)
-    fn_images_ids = data_dir / ('images.%s.ids.npy' % model_function.__name__)
+    cache_dir = data_dir / 'cache'
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    fn_images_embeddings = cache_dir / ('images.%s.embedded.npy' % model_function.__name__)
+    fn_images_ids = cache_dir / ('images.%s.ids.npy' % model_function.__name__)
     new_images_ids = []
     if fn_images_ids.exists():
         logger.info('load pre-calculated image embeddings')
@@ -529,6 +533,7 @@ def train(model_dir, train_dir, dev_dir,  # fs locations
           nb_epoch=100, batch_size=100, early_stopping_window=5,  # Training params
           nb_threads=1, nb_threads_parse=10  # performance: resource restrictions
           ):
+    global cache
 
     if nb_threads > 0:
         # restrict number of tensorflow threads
@@ -601,16 +606,36 @@ def train(model_dir, train_dir, dev_dir,  # fs locations
     train_records, _ = read_data(train_dir, limit=nr_examples, dont_shuffle=True)
     dev_records, _ = read_data(dev_dir, limit=nr_examples, dont_shuffle=True)
 
-    nlp = get_nlp()
+    if 'nlp' not in cache:
+        cache['nlp'] = get_nlp()
+    #nlp = get_nlp()
 
-    train_X, train_labels = records_to_features(records=train_records, nlp=nlp, shapes=feature_shapes,
-                                                nb_threads_parse=nb_threads_parse, max_entries=max_entries,
-                                                key_image=KEY_IMAGE if use_images else None, data_dir=train_dir,
-                                                image_model_function_name=image_embedding_function)
-    dev_X, dev_labels = records_to_features(records=dev_records, nlp=nlp, shapes=feature_shapes,
-                                            nb_threads_parse=nb_threads_parse, max_entries=max_entries,
-                                            key_image=KEY_IMAGE if use_images else None, data_dir=dev_dir,
-                                            image_model_function_name=image_embedding_function)
+    key_image = KEY_IMAGE if use_images else None
+    cache['train_X_and_labels'] = cache.get('train_X_and_labels', {})
+    preprocessing_cache_key = json.dumps((feature_shapes, max_entries, key_image, image_embedding_function, str(train_dir), str(dev_dir)), sort_keys=True)
+    if preprocessing_cache_key not in cache['train_X_and_labels']:
+        cache['train_X_and_labels'][preprocessing_cache_key] = records_to_features(records=train_records, nlp=cache['nlp'], shapes=feature_shapes,
+                                                       nb_threads_parse=nb_threads_parse, max_entries=max_entries,
+                                                       key_image=key_image, data_dir=train_dir,
+                                                       image_model_function_name=image_embedding_function)
+    train_X, train_labels = cache['train_X_and_labels'][preprocessing_cache_key]
+
+    cache['dev_X_and_labels'] = cache.get('dev_X_and_labels', {})
+    if preprocessing_cache_key not in cache['dev_X_and_labels']:
+        cache['dev_X_and_labels'][preprocessing_cache_key] = records_to_features(records=dev_records, nlp=cache['nlp'], shapes=feature_shapes,
+                                                     nb_threads_parse=nb_threads_parse, max_entries=max_entries,
+                                                     key_image=key_image, data_dir=dev_dir,
+                                                     image_model_function_name=image_embedding_function)
+    dev_X, dev_labels = cache['dev_X_and_labels'][preprocessing_cache_key]
+
+    #train_X, train_labels = records_to_features(records=train_records, nlp=cache['nlp'], shapes=feature_shapes,
+    #                                            nb_threads_parse=nb_threads_parse, max_entries=max_entries,
+    #                                            key_image=key_image, data_dir=train_dir,
+    #                                            image_model_function_name=image_embedding_function)
+    #dev_X, dev_labels = records_to_features(records=dev_records, nlp=cache['nlp'], shapes=feature_shapes,
+    #                                        nb_threads_parse=nb_threads_parse, max_entries=max_entries,
+    #                                        key_image=key_image, data_dir=dev_dir,
+    #                                        image_model_function_name=image_embedding_function)
 
     if setting is None or setting == '':
         # default setting
@@ -631,7 +656,8 @@ def train(model_dir, train_dir, dev_dir,  # fs locations
     logger.info('use setting: %s' % json.dumps(setting).replace(' ', ''))
     logger.info('use shapes: %s' % json.dumps(feature_shapes).replace(' ', ''))
 
-    model = create_model(embedding_weights=get_embeddings(nlp.vocab), feature_shapes=feature_shapes, setting=setting)
+    model = create_model(embedding_weights=get_embeddings(cache['nlp'].vocab), feature_shapes=feature_shapes,
+                         setting=setting)
 
     metric = 'val_mean_squared_error'
     metric_best_func = min
