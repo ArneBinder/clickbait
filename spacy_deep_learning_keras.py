@@ -460,11 +460,6 @@ def main(model_dir=None, dev_dir=None, train_dir=None, eval_out=None,
     #    raise NotImplementedError('dataset fetching not implemented')
     #    imdb_data = thinc.extra.datasets.imdb()
 
-    if eval_out is None:
-        eval_out = dev_dir / 'predictions.jsonl'
-    else:
-        eval_out = pathlib.Path(eval_out)
-
     if is_runtime:
         dev_records, _ = read_data(dev_dir)
         nlp = get_nlp()
@@ -586,6 +581,12 @@ def main(model_dir=None, dev_dir=None, train_dir=None, eval_out=None,
 
     # finally evaluate and write out dev results
     logger.info('predict...')
+    if eval_out is None:
+        assert model_dir is not None, 'eval_out path is not given and no model_dir is set that is required to set a ' \
+                                      'default (<model_dir>/predictions.jsonl)'
+        eval_out = model_dir / 'predictions.jsonl'
+    else:
+        eval_out = pathlib.Path(eval_out)
     y = model.predict(as_list(dev_X))
     with eval_out.open('w') as file_:
         file_.writelines(json.dumps({'id': str(record['id']), 'clickbaitScore': float(y[i][0])}) + '\n'
