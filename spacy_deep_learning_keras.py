@@ -694,6 +694,26 @@ def train(model_dir, train_dir, dev_dir,  # fs locations
            early_stopping_callback.stopped_epoch + 1 if early_stopping_callback.stopped_epoch > 0 else nb_epoch
 
 
+def dict_from_string(string, sep_entries='\t', sep_key_value=': '):
+    return {k: v for k, v in list(map(lambda x: tuple((x.split(sep_key_value)+[None])[:2]), string.split(sep_entries))) if k.strip() != ''}
+
+
+def parse_run_line(lines):
+    for line in lines:
+        line = line.strip()
+        if line == '' or line.startswith('#'):
+            continue
+        cols = dict_from_string(line, sep_entries='\t', sep_key_value=': ')
+        for k in cols:
+            cols[k] = cols[k].strip()
+            #if k.endswith('parameters'):
+            #    cols[k] = dict_from_string(' '+cols[k], sep_entries=' --', sep_key_value=' ')
+        #print(cols)
+        #cols_json = json.dumps(cols, sort_keys=True)
+        #print(cols_json)
+        yield cols
+
+
 @plac.annotations(
     mode=('processing mode', 'positional', None, str, ['predict', 'train', 'train_multi']),
     parameter_file=("parameter file containing one parameter setting per line. These parameters are prepended to the "
@@ -706,16 +726,31 @@ def main(mode, parameter_file=None, *args):
         plac.call(predict, args)
     elif mode == 'train_multi':
         assert parameter_file is not None, 'no parameter_file set'
+        RUN_DIR_PREFIX = 'run'
+        parameter_file = pathlib.Path(parameter_file)
         logger.info('Execute multiple training runs. Load (partial) parameter sets from: %s' % parameter_file)
         logger.info('GENERAL PARAMETERS:%s\n' % ' '.join(args).replace('--', '\n--'))
         with open(parameter_file) as f:
             parameters_list = f.readlines()
 
-        scores_fn = pathlib.Path(parameter_file).parent / 'scores.txt'
-        m = 'a' if scores_fn.exists() else 'w'
+        general_parameters_str = ' '.join(args)
+        scores_fn = parameter_file.parent / 'scores.txt'
+        m = 'w'
+        previous_runs = []
+        if scores_fn.exists():
+            m = 'a'
+            with open(scores_fn) as f:
+                previous_runs = f.readlines()
+
+        previous_runs = list(parse_run_line(previous_runs))
+        previous_all_parameters = [dict_from_string(' ' + run['parameters'] + ' ' + run['general_parameters'], sep_entries=' --', sep_key_value=' ') for run in previous_runs]
+        model_dir_names = [prev_parameters['model-dir'] for prev_parameters in previous_all_parameters]
+        # TODO: change this: get max_run from dirs in parameter_file.parent
+        max_run = max([-1] + [int(pathlib.Path(dir_name).name[len(RUN_DIR_PREFIX):]) for dir_name in model_dir_names if dir_name.startswith(str(parameter_file.parent / RUN_DIR_PREFIX))])
+
         with open(scores_fn, m) as f:
-            f.write('#time: %s\tgeneral_parameters: %s\n' % (datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'), ' '.join(args)))
-            f.flush()
+            #f.write('#time: %s\tgeneral_parameters: %s\n' % (datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'), ' '.join(args)))
+            #f.flush()
             n = 0
             for parameters_str in parameters_list:
                 parameters_str = parameters_str.strip()
@@ -724,14 +759,20 @@ def main(mode, parameter_file=None, *args):
                     continue
                 logger.info('EXECUTE RUN %i: %s\n' % (n, parameters_str.replace('--', '\n--')))
                 parameters = parameters_str.strip().split() + list(args)
+                # TODO: skip already processed parametersets
+                if '--model-dir' not in parameters:
+                    parameters.append('--model-dir')
+                    current_model_dir = str(parameter_file.parent / (RUN_DIR_PREFIX + str(max_run + 1)))
+                    parameters.append(current_model_dir)
+
                 try:
                     metric_name, metric_value, epochs = plac.call(train, parameters)
-                    f.write('time: %s\t%s:\t%7.4f\tepochs: %i\tparameters: %s\n'
+                    f.write('time: %s\t%s: %7.4f\tepochs: %i\tparameters: %s\tgeneral_parameters: %s\n'
                             % (datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'), metric_name, metric_value,
-                               epochs, parameters_str))
+                               epochs, parameters_str, general_parameters_str))
                 except Exception as e:
-                    f.write('time: %s\tERROR:\t%s\tparameters: %s\n'
-                            % (datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'), str(e), parameters_str))
+                    f.write('time: %s\tERROR: %s\tparameters: %s\tgeneral_parameters: %s\n'
+                            % (datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'), str(e), parameters_str, general_parameters_str))
                 f.flush()
                 n += 1
 
