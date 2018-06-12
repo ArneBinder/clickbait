@@ -662,11 +662,9 @@ def train(model_dir, train_dir, dev_dir,  # fs locations
 
     metric = 'val_mean_squared_error'
     metric_best_func = min
-    callbacks = [
-        EarlyStopping(monitor=metric, min_delta=1e-4, patience=early_stopping_window, verbose=1),
-        #keras.callbacks.ReduceLROnPlateau(monitor='loss', factor=0.1, epsilon=0.0001, patience=2, cooldown=1,
-        #                                  verbose=1)
-    ]
+    early_stopping_callback = EarlyStopping(monitor=metric, min_delta=1e-4, patience=early_stopping_window, verbose=1)
+
+    callbacks = [early_stopping_callback]
     if model_dir is not None:
         callbacks.append(ModelCheckpoint(filepath=str(model_dir / 'model_weights'), monitor=metric,
                                          verbose=0, save_best_only=True, save_weights_only=True, mode='auto',
@@ -691,7 +689,9 @@ def train(model_dir, train_dir, dev_dir,  # fs locations
 
     if logger_fh is not None:
         logger.removeHandler(logger_fh)
-    return metric, metric_best_func(metric_history)
+    return metric, \
+           metric_best_func(metric_history), \
+           early_stopping_callback.stopped_epoch + 1 if early_stopping_callback.stopped_epoch > 0 else nb_epoch
 
 
 @plac.annotations(
@@ -725,10 +725,10 @@ def main(mode, parameter_file=None, *args):
                 logger.info('EXECUTE RUN %i: %s\n' % (n, parameters_str.replace('--', '\n--')))
                 parameters = parameters_str.strip().split() + list(args)
                 try:
-                    metric_name, metric_value = plac.call(train, parameters)
-                    f.write('time: %s\t%s:\t%7.4f\tparameters: %s\n'
+                    metric_name, metric_value, epochs = plac.call(train, parameters)
+                    f.write('time: %s\t%s:\t%7.4f\tepochs: %i\tparameters: %s\n'
                             % (datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'), metric_name, metric_value,
-                               parameters_str))
+                               epochs, parameters_str))
                 except Exception as e:
                     f.write('time: %s\tERROR:\t%s\tparameters: %s\n'
                             % (datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'), str(e), parameters_str))
