@@ -756,8 +756,8 @@ def main(mode, parameter_file=None, run_dir=None, *args):
                                epochs, ' '.join(parameters)))
                 except Exception as e:
                     logger.error(traceback.format_exc())
-                    f.write('time: %s\tERROR: %s\tparameters: %s\n'
-                            % (datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'), str(e), ' '.join(parameters)))
+                    f.write('time: %s\tERROR: %s (%s)\tparameters: %s\n'
+                            % (datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'), str(e), str(e.args[0]), ' '.join(parameters)))
                 f.flush()
                 logger.info('run finished '.ljust(130, '='))
                 run_id = run_id + 1
