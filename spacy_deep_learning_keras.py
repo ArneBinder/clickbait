@@ -12,6 +12,7 @@ Compatible with: spaCy v2.0.0+
 import datetime
 import json
 import logging
+import os
 import pathlib
 import random
 
@@ -420,33 +421,17 @@ def get_nlp():
 @plac.annotations(
     model_dir=("Location of output model directory", "option", "m", str),
     dev_dir=("Location of development/evaluation file or directory", "option", "d", str),
-    #train_dir=("Location of training file or directory"),
     eval_out=("evaluation output file", "option", "v", str),
-    #is_runtime=("Demonstrate run-time usage", "flag", "r", bool),
-    #dropout=("Dropout", "option", "d", float),
-    #learn_rate=("Learn rate", "option", "e", float),
-    #nb_epoch=("Number of training epochs", "option", "i", int),
-    #batch_size=("Size of minibatches for training LSTM", "option", "b", int),
     nr_examples=("Limit to N examples", "option", "n", int),
     nb_threads=("Number of threads used for training/prediction", "option", "t", int),
     nb_threads_parse=("Number of threads used for parsing", "option", "p", int),
     max_entries=("Maximum number of entries that are considered for multi entry fields (e.g. targetParagraphs)",
                  "option", "x", int),
-    #early_stopping_window=("early stopping patience", "option", None, int),
-    #model_type=("one of: lstm, cnn", "option", "m", str),
+    # ATTENTION: depend on model!
     use_images=("use image data", "flag", "g", bool),
     image_embedding_function=("the imagenet model function (from keras.applications) used to embed the images. "
                               "Has to be in the format: <model_name>.<function_name>, e.g. vgg16.VGG16",
                               "option", "f", str),
-    #setting=("a json dict defining the shapes of the final_layers, and, eventually, dropout and learning_rate",
-    #         "option", None, str),
-    ## e.g. setting: {"final_layers":[512],"dropout":0.5,"learn_rate":0.001}
-    #feature_shapes=("a json dict defining parameters for submodules for individual (eventually concatenated by ',') "
-    #                "textual and image features", "option", None, str),
-    ## e.g. shapes: {"postText,targetTitle,targetDescription,targetParagraphs,targetKeywords":
-    ##                   {"model":"create_lstm", "max_length":500,"nr_hidden":128},
-    ##               "postMedia":
-    ##                   {"model":"create_cnn_image", "input_shape":[1,5,5,1536],"layers":[128]}}
 )
 def predict(model_dir, dev_dir, eval_out=None,  # fs locations
             nr_examples=-1, max_entries=-1,  # restrict data to a subset
@@ -499,8 +484,6 @@ def predict(model_dir, dev_dir, eval_out=None,  # fs locations
     model_dir=("Location of output model directory", "option", "m", str),
     dev_dir=("Location of development/evaluation file or directory", "option", "d", str),
     train_dir=("Location of training file or directory", "option", "a", str),
-    #eval_out=("evaluation output file", "option", "v", str),
-    #is_runtime=("Demonstrate run-time usage", "flag", "r", bool),
     dropout=("Dropout", "option", "o", float),
     learn_rate=("Learn rate", "option", "e", float),
     nb_epoch=("Number of training epochs", "option", "i", int),
@@ -655,7 +638,7 @@ def train(model_dir, train_dir, dev_dir,  # fs locations
         feature_shapes['postMedia']['input_shape'] = train_X[KEY_IMAGE].shape[1:]
 
     logger.info('use setting: %s' % json.dumps(setting).replace(' ', ''))
-    logger.info('use shapes: %s' % json.dumps(feature_shapes).replace(' ', ''))
+    logger.info('use feature_shapes: %s' % json.dumps(feature_shapes).replace(' ', ''))
 
     model = create_model(embedding_weights=get_embeddings(cache['nlp'].vocab), feature_shapes=feature_shapes,
                          setting=setting)
@@ -695,46 +678,41 @@ def train(model_dir, train_dir, dev_dir,  # fs locations
 
 
 def dict_from_string(string, sep_entries='\t', sep_key_value=': '):
-    return {k: v for k, v in list(map(lambda x: tuple((x.split(sep_key_value)+[None])[:2]), string.split(sep_entries))) if k.strip() != ''}
-
-
-def parse_run_line(lines):
-    for line in lines:
-        line = line.strip()
-        if line == '' or line.startswith('#'):
-            continue
-        cols = dict_from_string(line, sep_entries='\t', sep_key_value=': ')
-        for k in cols:
-            cols[k] = cols[k].strip()
-            #if k.endswith('parameters'):
-            #    cols[k] = dict_from_string(' '+cols[k], sep_entries=' --', sep_key_value=' ')
-        #print(cols)
-        #cols_json = json.dumps(cols, sort_keys=True)
-        #print(cols_json)
-        yield cols
+    return {k.strip(): v.strip() if v is not None else None
+            for k, v
+            in list(map(lambda x: tuple((x.split(sep_key_value)+[None])[:2]), string.split(sep_entries)))
+            if k.strip() != ''}
 
 
 @plac.annotations(
     mode=('processing mode', 'positional', None, str, ['predict', 'train', 'train_multi']),
     parameter_file=("parameter file containing one parameter setting per line. These parameters are prepended to the "
                     "current program parameters.", "option", "v", str),
+    run_dir=("directory where the subdirectories for the runs (including the trained model) and the final scores.txt "
+             "will be saved to", "option", "r", str),
     args='the parameters for the underlying processing method')
-def main(mode, parameter_file=None, *args):
+def main(mode, parameter_file=None, run_dir=None, *args):
     if mode == 'train':
         plac.call(train, args)
     elif mode == 'predict':
         plac.call(predict, args)
     elif mode == 'train_multi':
-        assert parameter_file is not None, 'no parameter_file set'
-        RUN_DIR_PREFIX = 'run'
-        parameter_file = pathlib.Path(parameter_file)
         logger.info('Execute multiple training runs. Load (partial) parameter sets from: %s' % parameter_file)
         logger.info('GENERAL PARAMETERS:%s\n' % ' '.join(args).replace('--', '\n--'))
+        assert parameter_file is not None, 'no parameter_file set'
+        parameter_file = pathlib.Path(parameter_file)
+        if run_dir is None:
+            run_dir = parameter_file.parent / 'runs'
+        else:
+            run_dir = pathlib.Path(run_dir) / 'runs'
+        run_dir.mkdir(parents=True, exist_ok=True)
+        previous_run_ids = [int(entry.name) for entry in os.scandir(run_dir) if entry.is_dir() and str(entry.name).isdigit()]
+        run_id = max(previous_run_ids) + 1
+
         with open(parameter_file) as f:
             parameters_list = f.readlines()
 
-        general_parameters_str = ' '.join(args)
-        scores_fn = parameter_file.parent / 'scores.txt'
+        scores_fn = run_dir.parent / 'scores.txt'
         m = 'w'
         previous_runs = []
         if scores_fn.exists():
@@ -742,39 +720,45 @@ def main(mode, parameter_file=None, *args):
             with open(scores_fn) as f:
                 previous_runs = f.readlines()
 
-        previous_runs = list(parse_run_line(previous_runs))
-        previous_all_parameters = [dict_from_string(' ' + run['parameters'] + ' ' + run['general_parameters'], sep_entries=' --', sep_key_value=' ') for run in previous_runs]
-        model_dir_names = [prev_parameters['model-dir'] for prev_parameters in previous_all_parameters]
-        # TODO: change this: get max_run from dirs in parameter_file.parent
-        max_run = max([-1] + [int(pathlib.Path(dir_name).name[len(RUN_DIR_PREFIX):]) for dir_name in model_dir_names if dir_name.startswith(str(parameter_file.parent / RUN_DIR_PREFIX))])
+        previous_runs = [dict_from_string(line, sep_entries='\t', sep_key_value=': ')
+                         for line in previous_runs if line.strip() != '' and line.strip()[0] != '#']
+        previous_parameters = [dict_from_string(' ' + run['parameters'], sep_entries=' --', sep_key_value=' ') for run in previous_runs]
+        # delete model-dir info
+        for pp in previous_parameters:
+            if 'model-dir' in pp:
+                del pp['model-dir']
 
         with open(scores_fn, m) as f:
-            #f.write('#time: %s\tgeneral_parameters: %s\n' % (datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'), ' '.join(args)))
-            #f.flush()
-            n = 0
             for parameters_str in parameters_list:
                 parameters_str = parameters_str.strip()
                 # skip empty lines and comment lines
                 if parameters_str == '' or parameters_str.startswith('#'):
                     continue
-                logger.info('EXECUTE RUN %i: %s\n' % (n, parameters_str.replace('--', '\n--')))
+                logger.info('EXECUTE RUN %i: %s\n' % (run_id, parameters_str.replace('--', '\n--')))
                 parameters = parameters_str.strip().split() + list(args)
-                # TODO: skip already processed parametersets
                 if '--model-dir' not in parameters:
                     parameters.append('--model-dir')
-                    current_model_dir = str(parameter_file.parent / (RUN_DIR_PREFIX + str(max_run + 1)))
+                    current_model_dir = str(run_dir / str(run_id))
                     parameters.append(current_model_dir)
 
+                # skip already processed parameter sets
+                parameters_dict = dict_from_string(' ' + ' '.join(parameters), sep_entries=' --', sep_key_value=' ')
+                # discard location
+                del parameters_dict['model-dir']
+                if parameters_dict in previous_parameters:
+                    logger.info('parameter set was already processed, skip it. '.ljust(130, '='))
+                    continue
                 try:
                     metric_name, metric_value, epochs = plac.call(train, parameters)
-                    f.write('time: %s\t%s: %7.4f\tepochs: %i\tparameters: %s\tgeneral_parameters: %s\n'
+                    f.write('time: %s\t%s: %7.4f\tepochs: %i\tparameters: %s\n'
                             % (datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'), metric_name, metric_value,
-                               epochs, parameters_str, general_parameters_str))
+                               epochs, ' '.join(parameters)))
                 except Exception as e:
-                    f.write('time: %s\tERROR: %s\tparameters: %s\tgeneral_parameters: %s\n'
-                            % (datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'), str(e), parameters_str, general_parameters_str))
+                    f.write('time: %s\tERROR: %s\tparameters: %s\n'
+                            % (datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'), str(e), ' '.join(parameters)))
                 f.flush()
-                n += 1
+                logger.info('run finished '.ljust(130, '='))
+                run_id = run_id + 1
 
 
 if __name__ == '__main__':
