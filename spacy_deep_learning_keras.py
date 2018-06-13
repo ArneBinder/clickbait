@@ -754,12 +754,14 @@ def main(mode, parameter_file=None, run_dir=None, *args):
                     f.write('time: %s\t%s: %7.4f\tepochs: %i\tparameters: %s\n'
                             % (datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'), metric_name, metric_value,
                                epochs, ' '.join(parameters)))
+                    logger.info('run finished '.ljust(130, '='))
                 except Exception as e:
                     logger.error(traceback.format_exc())
                     f.write('time: %s\tERROR: %s (%s)\tparameters: %s\n'
-                            % (datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'), str(e), str(e.args[0]), ' '.join(parameters)))
-                f.flush()
-                logger.info('run finished '.ljust(130, '='))
+                            % (datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'), str(type(e).__name__), str(e.args[0]), ' '.join(parameters)))
+                    logger.info('run finished with ERROR '.ljust(130, '='))
+                finally:
+                    f.flush()
                 run_id = run_id + 1
 
 
