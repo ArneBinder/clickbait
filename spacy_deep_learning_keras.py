@@ -703,7 +703,7 @@ def train_multi(parameter_file, *args):
     run_dir.mkdir(parents=True, exist_ok=True)
     previous_run_ids = [int(entry.name) for entry in os.scandir(run_dir) if
                         entry.is_dir() and str(entry.name).isdigit()]
-    run_id = max(previous_run_ids) + 1
+    run_id = max([-1] + previous_run_ids) + 1
 
     with open(parameter_file) as f:
         parameters_list = f.readlines()
