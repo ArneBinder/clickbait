@@ -754,6 +754,7 @@ def main(mode, parameter_file=None, run_dir=None, *args):
                             % (datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'), metric_name, metric_value,
                                epochs, ' '.join(parameters)))
                 except Exception as e:
+                    logger.error(e)
                     f.write('time: %s\tERROR: %s\tparameters: %s\n'
                             % (datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'), str(e), ' '.join(parameters)))
                 f.flush()
