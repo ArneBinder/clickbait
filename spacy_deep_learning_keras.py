@@ -352,7 +352,7 @@ def records_to_features(records, nlp, shapes, nb_threads_parse=3, max_entries=1,
                                     n_threads=nb_threads_parse, as_tuples=True)
     X, labels, ids = get_text_features(train_docs_w_context, {k: shapes[k]['max_length'] for k in shapes.keys() if k!=key_image})
 
-    if key_image is not None:
+    if image_model_function_name is not None:
         logger.info('add image features...')
         assert data_dir is not None, 'key_image is not None, but no data_dir given'
 
@@ -597,23 +597,25 @@ def train(model_dir, train_dir, dev_dir,  # fs locations
     use_images = image_embedding_function is not None and image_embedding_function.strip() != ''
     if use_images:
         logger.debug('use image data')
-    key_image = KEY_IMAGE if use_images else None
+    else:
+        del feature_shapes[KEY_IMAGE]
+    #key_image = KEY_IMAGE if use_images else None
 
     cache['train_X_and_labels'] = cache.get('train_X_and_labels', {})
-    preprocessing_cache_key = json.dumps((feature_shapes, max_entries, key_image, image_embedding_function, str(train_dir), str(dev_dir)), sort_keys=True)
+    preprocessing_cache_key = json.dumps((feature_shapes, max_entries, image_embedding_function, str(train_dir), str(dev_dir)), sort_keys=True)
     if preprocessing_cache_key not in cache['train_X_and_labels']:
-        cache['train_X_and_labels'][preprocessing_cache_key] = records_to_features(records=train_records, nlp=cache['nlp'], shapes=feature_shapes,
-                                                       nb_threads_parse=nb_threads_parse, max_entries=max_entries,
-                                                       key_image=key_image, data_dir=train_dir,
-                                                       image_model_function_name=image_embedding_function)
+        cache['train_X_and_labels'][preprocessing_cache_key] = records_to_features(
+            records=train_records, nlp=cache['nlp'], shapes=feature_shapes, nb_threads_parse=nb_threads_parse,
+            max_entries=max_entries, key_image=KEY_IMAGE, data_dir=train_dir,
+            image_model_function_name=image_embedding_function)
     train_X, train_labels = cache['train_X_and_labels'][preprocessing_cache_key]
 
     cache['dev_X_and_labels'] = cache.get('dev_X_and_labels', {})
     if preprocessing_cache_key not in cache['dev_X_and_labels']:
-        cache['dev_X_and_labels'][preprocessing_cache_key] = records_to_features(records=dev_records, nlp=cache['nlp'], shapes=feature_shapes,
-                                                     nb_threads_parse=nb_threads_parse, max_entries=max_entries,
-                                                     key_image=key_image, data_dir=dev_dir,
-                                                     image_model_function_name=image_embedding_function)
+        cache['dev_X_and_labels'][preprocessing_cache_key] = records_to_features(
+            records=dev_records, nlp=cache['nlp'], shapes=feature_shapes, nb_threads_parse=nb_threads_parse,
+            max_entries=max_entries, key_image=KEY_IMAGE, data_dir=dev_dir,
+            image_model_function_name=image_embedding_function)
     dev_X, dev_labels = cache['dev_X_and_labels'][preprocessing_cache_key]
 
     #train_X, train_labels = records_to_features(records=train_records, nlp=cache['nlp'], shapes=feature_shapes,
