@@ -691,8 +691,9 @@ def dict_from_string(string, sep_entries='\t', sep_key_value=': '):
 @plac.annotations(
     parameter_file=('parameter file containing one parameter setting per line. These parameters are prepended to the '
                     'current program parameters.', 'positional', None, str),
+    reps=('number of repetitions', 'positional', None, int),
     args='the general training parameters used for every run')
-def train_multi(parameter_file, *args):
+def train_multi(parameter_file, reps, *args):
     assert parameter_file is not None, 'no parameter_file set'
     logger.info('Execute multiple training runs. Load (partial) parameter sets from: %s' % parameter_file)
     logger.info('GENERAL PARAMETERS:%s\n' % ' '.join(args).replace('--', '\n--'))
@@ -726,41 +727,43 @@ def train_multi(parameter_file, *args):
         if 'model-dir' in pp:
             del pp['model-dir']
 
+    assert reps >= 1, 'number of repetitions has to be greater zero'
     with open(scores_fn, m) as f:
-        for parameters_str in parameters_list:
-            parameters_str = parameters_str.strip()
-            # skip empty lines and comment lines
-            if parameters_str == '' or parameters_str.startswith('#'):
-                continue
-            logger.info('EXECUTE RUN %i: %s\n' % (run_id, parameters_str.replace('--', '\n--')))
-            parameters = parameters_str.strip().split() + list(args)
-            if '--model-dir' not in parameters:
-                parameters.append('--model-dir')
-                current_model_dir = str(run_dir / str(run_id))
-                parameters.append(current_model_dir)
+        for i in range(reps):
+            for parameters_str in parameters_list:
+                parameters_str = parameters_str.strip()
+                # skip empty lines and comment lines
+                if parameters_str == '' or parameters_str.startswith('#'):
+                    continue
+                logger.info('EXECUTE RUN %i (rep %i): %s\n' % (run_id, i, parameters_str.replace('--', '\n--')))
+                parameters = parameters_str.strip().split() + list(args)
+                if '--model-dir' not in parameters:
+                    parameters.append('--model-dir')
+                    current_model_dir = str(run_dir / str(run_id))
+                    parameters.append(current_model_dir)
 
-            # skip already processed parameter sets
-            parameters_dict = dict_from_string(' ' + ' '.join(parameters), sep_entries=' --', sep_key_value=' ')
-            # discard location
-            del parameters_dict['model-dir']
-            if parameters_dict in previous_parameters:
-                logger.info('parameter set was already processed, skip it. '.ljust(130, '='))
-                continue
-            try:
-                metric_name, metric_value, epochs = plac.call(train, parameters)
-                f.write('time: %s\t%s: %7.4f\tepochs: %i\tparameters: %s\n'
-                        % (datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'), metric_name, metric_value,
-                           epochs, ' '.join(parameters)))
-                logger.info('run finished '.ljust(130, '='))
-            except Exception as e:
-                logger.error(traceback.format_exc())
-                f.write('time: %s\tERROR: %s (%s)\tparameters: %s\n'
-                        % (datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'), str(type(e).__name__), str(e.args[0]),
-                           ' '.join(parameters)))
-                logger.info('run finished with ERROR '.ljust(130, '='))
-            finally:
-                f.flush()
-            run_id = run_id + 1
+                # skip already processed parameter sets
+                parameters_dict = dict_from_string(' ' + ' '.join(parameters), sep_entries=' --', sep_key_value=' ')
+                # discard location
+                del parameters_dict['model-dir']
+                if parameters_dict in previous_parameters:
+                    logger.info('parameter set was already processed, skip it. '.ljust(130, '='))
+                    continue
+                try:
+                    metric_name, metric_value, epochs = plac.call(train, parameters)
+                    f.write('time: %s\t%s: %7.4f\tepochs: %i\tparameters: %s\n'
+                            % (datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'), metric_name, metric_value,
+                               epochs, ' '.join(parameters + ['--rep', i])))
+                    logger.info('run finished '.ljust(130, '='))
+                except Exception as e:
+                    logger.error(traceback.format_exc())
+                    f.write('time: %s\tERROR: %s (%s)\tparameters: %s\n'
+                            % (datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'), str(type(e).__name__), str(e.args[0]),
+                               ' '.join(parameters + ['--rep', i])))
+                    logger.info('run finished with ERROR '.ljust(130, '='))
+                finally:
+                    f.flush()
+                run_id = run_id + 1
 
 
 @plac.annotations(
