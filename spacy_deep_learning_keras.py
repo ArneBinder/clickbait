@@ -755,13 +755,13 @@ def train_multi(parameter_file, reps, *args):
                     metric_name, metric_value, epochs = plac.call(train, parameters)
                     f.write('time: %s\t%s: %7.4f\tepochs: %i\tparameters: %s\n'
                             % (datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'), metric_name, metric_value,
-                               epochs, ' '.join(parameters + ['--rep', i])))
+                               epochs, ' '.join(parameters + ['--rep', str(i)])))
                     logger.info('run finished '.ljust(130, '='))
                 except Exception as e:
                     logger.error(traceback.format_exc())
                     f.write('time: %s\tERROR: %s (%s)\tparameters: %s\n'
                             % (datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'), str(type(e).__name__), str(e.args[0]),
-                               ' '.join(parameters + ['--rep', i])))
+                               ' '.join(parameters + ['--rep', str(i)])))
                     logger.info('run finished with ERROR '.ljust(130, '='))
                 finally:
                     f.flush()
