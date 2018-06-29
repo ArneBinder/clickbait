@@ -15,6 +15,7 @@ import logging
 import os
 import pathlib
 import random
+import sys
 import traceback
 
 import cytoolz  # install
@@ -29,13 +30,15 @@ from keras.callbacks import EarlyStopping, ModelCheckpoint, CSVLogger
 from keras.layers import LSTM, Dense, Embedding, Bidirectional, concatenate, Dropout, SpatialDropout1D, \
     BatchNormalization, Conv1D, GlobalMaxPooling1D, MaxPooling1D, GlobalAveragePooling1D, Reshape
 from keras.layers import TimeDistributed
-from keras.models import model_from_json
+from keras.models import model_from_json, model_from_config
 from keras.optimizers import Adam
 from keras.preprocessing import image
 from spacy.compat import pickle
 import tensorflow as tf
 
 SPACY_MODEL = 'en_vectors_web_lg'
+IMAGE_EMBEDDING_FUNCTION_KEY = 'image_embedding_function'
+IMAGE_KEY = 'postMedia'
 
 
 logger = logging.getLogger('corpus')
@@ -51,12 +54,16 @@ cache = {}
 def load_model(path, nlp):
     with (path / 'model_config.json').open() as file_:
         _json = file_.read()
-        model = model_from_json(_json)
+        config_dict = json.loads(_json)
+        image_embedding_function = config_dict.get(IMAGE_EMBEDDING_FUNCTION_KEY, None)
+        if IMAGE_EMBEDDING_FUNCTION_KEY in config_dict:
+            del config_dict[IMAGE_EMBEDDING_FUNCTION_KEY]
+        model = model_from_config(config_dict)
     with (path / 'model_weights').open('rb') as file_:
         lstm_weights = pickle.load(file_)
     embeddings = get_embeddings(nlp.vocab)
     model.set_weights([embeddings] + lstm_weights)
-    return model, json.loads(_json)
+    return model, config_dict, image_embedding_function
 
 
 # DEPRECATED
@@ -157,17 +164,22 @@ def get_image_features(records, ids, key_image, data_dir, image_model_function_n
     model_module = getattr(applications, model_module_name)
     model_function = getattr(model_module, model_function_name)
     preprocessing_function = getattr(model_module, 'preprocess_input')
-    logger.info('use %s to embed images' % model_function.__name__)
+    logger.info('use %s to embed potential images for %i posts' % (model_function.__name__, len(ids)))
 
     ids_mapping = {_id: i for i, _id in enumerate(ids)}
     model = None
 
     cache_dir = data_dir / 'cache'
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    fn_images_embeddings = cache_dir / ('images.%s.embedded.npy' % model_function.__name__)
-    fn_images_ids = cache_dir / ('images.%s.ids.npy' % model_function.__name__)
+    try:
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        fn_images_embeddings = cache_dir / ('images.%s.embedded.npy' % model_function.__name__)
+        fn_images_ids = cache_dir / ('images.%s.ids.npy' % model_function.__name__)
+    except IOError:
+        logger.warning('could not create cache dir for image embeddings at %s' % str(cache_dir))
+        fn_images_embeddings = None
+        fn_images_ids = None
     new_images_ids = []
-    if fn_images_ids.exists():
+    if fn_images_ids is not None and fn_images_ids.exists():
         logger.info('load pre-calculated image embeddings')
         assert fn_images_embeddings.exists(), 'found images_ids file, but not images_embeddings file'
         images_ids = np.load(fn_images_ids)
@@ -215,7 +227,7 @@ def get_image_features(records, ids, key_image, data_dir, image_model_function_n
             images_embeddings = new_images_embeddings
             images_ids = np.array(new_images_ids, dtype=int)
 
-    if images_embeddings is not None:
+    if images_embeddings is not None and fn_images_embeddings is not None and fn_images_ids is not None:
         logger.info('save calculated image embeddings...')
         np.save(fn_images_embeddings, images_embeddings)
         np.save(fn_images_ids, images_ids)
@@ -428,17 +440,10 @@ def get_nlp():
     nb_threads_parse=("Number of threads used for parsing", "option", "p", int),
     max_entries=("Maximum number of entries that are considered for multi entry fields (e.g. targetParagraphs)",
                  "option", "x", int),
-    # TODO/ATTENTION: depends on model!
-    #use_images=("use image data", "flag", "g", bool),
-    image_embedding_function=("the imagenet model function (from keras.applications) used to embed the images. "
-                              "Has to be in the format: <model_name>.<function_name>, e.g. vgg16.VGG16",
-                              "option", "I", str),
 )
 def predict(model_dir, dev_dir, eval_out=None,  # fs locations
             nr_examples=-1, max_entries=-1,  # restrict data to a subset
-            #use_images=False,
-            image_embedding_function='vgg16.VGG16',  # image data
-            nb_threads=1, nb_threads_parse=10  # performance: resource restrictions
+            nb_threads=10, nb_threads_parse=10  # performance: resource restrictions
             ):
 
     if nb_threads > 0:
@@ -451,22 +456,22 @@ def predict(model_dir, dev_dir, eval_out=None,  # fs locations
     assert dev_dir is not None, 'dev_dir is not set'
     dev_dir = pathlib.Path(dev_dir)
 
-    KEY_IMAGE = 'postMedia'
     dev_records, _ = read_data(dev_dir, limit=nr_examples)
     nlp = get_nlp()
     logger.info("Loading model...")
     assert model_dir is not None, 'model_dir not set'
-    model, config = load_model(model_dir, nlp)
+    model_dir = pathlib.Path(model_dir)
+    model, config, image_embedding_function = load_model(model_dir, nlp)
     feature_shapes = get_max_lengths_from_config(config)
 
-    use_images = KEY_IMAGE in feature_shapes.keys()
+    use_images = IMAGE_KEY in feature_shapes.keys()
     if use_images:
         logger.info('use image data')
         assert image_embedding_function is not None and image_embedding_function.strip() != '', \
             'image input layer found in model description, but no image_embedding_function is not set'
     dev_X, dev_labels = records_to_features(records=dev_records, nlp=nlp, shapes=feature_shapes,
                                             nb_threads_parse=nb_threads_parse, max_entries=max_entries,
-                                            key_image=KEY_IMAGE if use_images else None,
+                                            key_image=IMAGE_KEY if use_images else None,
                                             data_dir=dev_dir,
                                             image_model_function_name=image_embedding_function)
     # finally evaluate and write out dev results
@@ -474,11 +479,13 @@ def predict(model_dir, dev_dir, eval_out=None,  # fs locations
     if eval_out is None:
         assert model_dir is not None, 'eval_out path is not given and no model_dir is set that is required to set a ' \
                                       'default (<model_dir>/predictions.jsonl)'
-        eval_out = model_dir / 'predictions.jsonl'
+        eval_out = model_dir
     else:
         eval_out = pathlib.Path(eval_out)
+    eval_out.mkdir(parents=True, exist_ok=True)
+
     y = model.predict(as_list(dev_X))
-    with eval_out.open('w') as file_:
+    with (eval_out / 'predictions.jsonl').open('w') as file_:
         file_.writelines(json.dumps({'id': str(record['id']), 'clickbaitScore': float(y[i][0])}) + '\n'
                          for i, record in enumerate(dev_records))
 
@@ -541,7 +548,6 @@ def train(model_dir, train_dir, dev_dir,  # fs locations
     else:
         logger_fh = None
 
-    KEY_IMAGE = 'postMedia'
     assert train_dir is not None, 'train_dir is not set'
     train_dir = pathlib.Path(train_dir)
     # some defaults...
@@ -598,15 +604,14 @@ def train(model_dir, train_dir, dev_dir,  # fs locations
     if use_images:
         logger.debug('use image data')
     else:
-        del feature_shapes[KEY_IMAGE]
-    #key_image = KEY_IMAGE if use_images else None
+        del feature_shapes[IMAGE_KEY]
 
     cache['train_X_and_labels'] = cache.get('train_X_and_labels', {})
     preprocessing_cache_key = json.dumps((feature_shapes, max_entries, image_embedding_function, str(train_dir), str(dev_dir)), sort_keys=True)
     if preprocessing_cache_key not in cache['train_X_and_labels']:
         cache['train_X_and_labels'][preprocessing_cache_key] = records_to_features(
             records=train_records, nlp=cache['nlp'], shapes=feature_shapes, nb_threads_parse=nb_threads_parse,
-            max_entries=max_entries, key_image=KEY_IMAGE, data_dir=train_dir,
+            max_entries=max_entries, key_image=IMAGE_KEY, data_dir=train_dir,
             image_model_function_name=image_embedding_function)
     train_X, train_labels = cache['train_X_and_labels'][preprocessing_cache_key]
 
@@ -614,7 +619,7 @@ def train(model_dir, train_dir, dev_dir,  # fs locations
     if preprocessing_cache_key not in cache['dev_X_and_labels']:
         cache['dev_X_and_labels'][preprocessing_cache_key] = records_to_features(
             records=dev_records, nlp=cache['nlp'], shapes=feature_shapes, nb_threads_parse=nb_threads_parse,
-            max_entries=max_entries, key_image=KEY_IMAGE, data_dir=dev_dir,
+            max_entries=max_entries, key_image=IMAGE_KEY, data_dir=dev_dir,
             image_model_function_name=image_embedding_function)
     dev_X, dev_labels = cache['dev_X_and_labels'][preprocessing_cache_key]
 
@@ -641,7 +646,7 @@ def train(model_dir, train_dir, dev_dir,  # fs locations
     if use_images:
         if 'postMedia' not in feature_shapes:
             feature_shapes['postMedia'] = {'model': create_cnn_image.__name__, 'layers': [128]}
-        feature_shapes['postMedia']['input_shape'] = train_X[KEY_IMAGE].shape[1:]
+        feature_shapes['postMedia']['input_shape'] = train_X[IMAGE_KEY].shape[1:]
 
     logger.info('use setting: %s' % json.dumps(setting).replace(' ', ''))
     logger.info('use feature_shapes: %s' % json.dumps(feature_shapes).replace(' ', ''))
@@ -674,7 +679,11 @@ def train(model_dir, train_dir, dev_dir,  # fs locations
             pickle.dump(weights[1:], file_)
         # save model config
         with (model_dir / 'model_config.json').open('w') as file_:
-            file_.write(model.to_json())
+            config_json = model.to_json()
+            config_dict = json.loads(config_json)
+            config_dict[IMAGE_EMBEDDING_FUNCTION_KEY] = image_embedding_function
+            json.dump(config_dict, file_)
+            #file_.write(model.to_json())
 
     if logger_fh is not None:
         logger.removeHandler(logger_fh)
@@ -783,4 +792,12 @@ def main(mode, *args):
 
 
 if __name__ == '__main__':
-    plac.call(main)
+    # try to get -i and -o args
+    a = sys.argv[1:5]
+    args_dict = dict(zip(a[::2], a[1::2])) if len(a) == 4 else {}
+    if '-i' in args_dict and '-o' in args_dict:
+        # predict with local model
+        _args = ['--model-dir', 'model_wimages', '--dev-dir', args_dict['-i'],  '--eval-out', args_dict['-o']]
+        plac.call(predict, _args + sys.argv[5:])
+    else:
+        plac.call(main)
