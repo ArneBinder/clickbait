@@ -797,7 +797,7 @@ if __name__ == '__main__':
     args_dict = dict(zip(a[::2], a[1::2])) if len(a) == 4 else {}
     if '-i' in args_dict and '-o' in args_dict:
         # predict with local model
-        _args = ['--model-dir', 'model_wimages', '--dev-dir', args_dict['-i'],  '--eval-out', args_dict['-o']]
+        _args = ['--model-dir', 'model_wimages_best', '--dev-dir', args_dict['-i'],  '--eval-out', args_dict['-o']]
         plac.call(predict, _args + sys.argv[5:])
     else:
         plac.call(main)

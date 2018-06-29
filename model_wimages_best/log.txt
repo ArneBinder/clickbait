@@ -1,0 +1,6 @@
+2018-06-28 07:38:09,076 INFO Read data
+2018-06-28 07:38:10,173 DEBUG use image data
+2018-06-28 07:38:10,173 INFO use setting: {"final_layers":[512],"dropout":0.5,"learn_rate":0.001}
+2018-06-28 07:38:10,173 INFO use feature_shapes: {"targetParagraphs":{"model":"create_lstm","max_length":500,"nr_hidden":64},"postText":{"model":"create_lstm","max_length":50,"nr_hidden":30},"targetTitle":{"model":"create_lstm","max_length":50,"nr_hidden":30},"targetKeywords":{"model":"create_lstm","max_length":100,"nr_hidden":30},"targetDescription":{"model":"create_lstm","max_length":100,"nr_hidden":30},"postMedia":{"model":"create_cnn_image","layers":[128],"input_shape":[1,5,5,1536]}}
+2018-06-28 07:38:10,176 DEBUG mask_zero=True
+2018-06-28 09:56:51,458 INFO remove embeddings from model...
