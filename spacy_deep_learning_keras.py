@@ -433,8 +433,8 @@ def get_nlp():
 
 @plac.annotations(
     model_dir=("Location of output model directory", "option", "m", str),
-    dev_dir=("Location of development/evaluation file or directory", "option", "d", str),
-    eval_out=("evaluation output file", "option", "v", str),
+    dev_dir=("Location of development/evaluation file or directory", "option", "i", str),
+    eval_out=("evaluation output file", "option", "o", str),
     nr_examples=("Limit to N examples", "option", "n", int),
     nb_threads=("Number of threads used for training/prediction", "option", "t", int),
     nb_threads_parse=("Number of threads used for parsing", "option", "p", int),
@@ -468,7 +468,7 @@ def predict(model_dir, dev_dir, eval_out=None,  # fs locations
     if use_images:
         logger.info('use image data')
         assert image_embedding_function is not None and image_embedding_function.strip() != '', \
-            'image input layer found in model description, but no image_embedding_function is not set'
+            'image input layer found in model description, but image_embedding_function is not set'
     dev_X, dev_labels = records_to_features(records=dev_records, nlp=nlp, shapes=feature_shapes,
                                             nb_threads_parse=nb_threads_parse, max_entries=max_entries,
                                             key_image=IMAGE_KEY if use_images else None,
@@ -492,11 +492,11 @@ def predict(model_dir, dev_dir, eval_out=None,  # fs locations
 
 @plac.annotations(
     model_dir=("Location of output model directory", "option", "m", str),
-    dev_dir=("Location of development/evaluation file or directory", "option", "d", str),
+    dev_dir=("Location of development/evaluation file or directory", "option", "i", str),
     train_dir=("Location of training file or directory", "option", "a", str),
     dropout=("Dropout", "option", "o", float),
     learn_rate=("Learn rate", "option", "e", float),
-    nb_epoch=("Number of training epochs", "option", "i", int),
+    nb_epoch=("Number of training epochs", "option", "d", int),
     batch_size=("Size of minibatches for training LSTM", "option", "b", int),
     nr_examples=("Limit to N examples", "option", "n", int),
     nb_threads=("Number of threads used for training/prediction", "option", "T", int),
@@ -792,12 +792,7 @@ def main(mode, *args):
 
 
 if __name__ == '__main__':
-    # try to get -i and -o args
-    a = sys.argv[1:5]
-    args_dict = dict(zip(a[::2], a[1::2])) if len(a) == 4 else {}
-    if '-i' in args_dict and '-o' in args_dict:
-        # predict with local model
-        _args = ['--model-dir', 'model_wimages_best', '--dev-dir', args_dict['-i'],  '--eval-out', args_dict['-o']]
-        plac.call(predict, _args + sys.argv[5:])
+    if len(sys.argv) > 1 and sys.argv[1] not in ['predict', 'train', 'train_multi']:
+        plac.call(predict, sys.argv[1:])
     else:
         plac.call(main)
