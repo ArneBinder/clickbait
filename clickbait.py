@@ -5,7 +5,7 @@ This example shows how to use an LSTM sentiment classification model trained usi
 
 Prerequisites:
 spacy download en_vectors_web_lg
-pip install keras==2.0.9
+pip install keras==2.0.9 numpy cytoolz tensorflow plac
 
 Compatible with: spaCy v2.0.0+
 """
@@ -22,8 +22,7 @@ import cytoolz  # install
 import numpy as np  # install
 import plac  # install
 import spacy  # install
-import thinc.extra.datasets
-# tensorflow: install
+import tensorflow as tf  # install
 # keras: install
 from keras import Model, Input, applications, backend
 from keras.callbacks import EarlyStopping, ModelCheckpoint, CSVLogger
@@ -34,7 +33,6 @@ from keras.models import model_from_json, model_from_config
 from keras.optimizers import Adam
 from keras.preprocessing import image
 from spacy.compat import pickle
-import tensorflow as tf
 
 SPACY_MODEL = 'en_vectors_web_lg'
 IMAGE_EMBEDDING_FUNCTION_KEY = 'image_embedding_function'
