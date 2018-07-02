@@ -5,8 +5,11 @@
 #   2) install spacy model manually, execute:
 #       pip install https://github.com/explosion/spacy-models/releases/download/en_vectors_web_lg-2.0.0/en_vectors_web_lg-2.0.0.tar.gz#en_vectors_web_lg
 
-tensorflow=1.4
-spacy=2
+# training/prediction
+#tensorflow=1.4
+tensorflow
+#spacy=2
+spacy
 keras
 scikit-learn
 numpy
@@ -15,5 +18,10 @@ plac
 pillow
 pathlib
 
+# result evaluation
+ipykernel
+matplotlib
+pandas
+
 # spacy model including vectors
-https://github.com/explosion/spacy-models/releases/download/en_vectors_web_lg-2.0.0/en_vectors_web_lg-2.0.0.tar.gz#en_vectors_web_lg
+#https://github.com/explosion/spacy-models/releases/download/en_vectors_web_lg-2.0.0/en_vectors_web_lg-2.0.0.tar.gz#en_vectors_web_lg
