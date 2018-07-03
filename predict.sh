@@ -6,4 +6,4 @@ SCRIPT_DIR="$( cd "$(dirname "$0")" ; pwd -P )"
 #echo "use model from $MODEL_DIR"
 
 cd "$SCRIPT_DIR"
-python clickbait.py --model-dir model_wimages_best "$@"
+python clickbait.py --model-dir model/wimages_best "$@"
