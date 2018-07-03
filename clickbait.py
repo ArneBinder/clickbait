@@ -37,6 +37,7 @@ from spacy.compat import pickle
 SPACY_MODEL = 'en_vectors_web_lg'
 IMAGE_EMBEDDING_FUNCTION_KEY = 'image_embedding_function'
 IMAGE_KEY = 'postMedia'
+IMAGE_FLAG_KEY = 'image_available'
 
 
 logger = logging.getLogger('corpus')
@@ -188,12 +189,15 @@ def get_image_features(records, ids, key_image, data_dir, image_model_function_n
         images_embeddings = None
 
     logger.info('embed images...')
+    current_image_indices = []
     for record in records:
         if record['id'] in images_ids:
             current_embedding = images_embeddings[images_ids_mapping[record['id']]]
             if X_image is None:  # initialize lazy
                 X_image = np.zeros(shape=[len(ids)] + list(current_embedding.shape), dtype=np.float32)
-            X_image[ids_mapping[record['id']]] = current_embedding
+            idx = ids_mapping[record['id']]
+            X_image[idx] = current_embedding
+            current_image_indices.append(idx)
         else:
             feature_list = []
             for path in record[key_image]:
@@ -212,8 +216,10 @@ def get_image_features(records, ids, key_image, data_dir, image_model_function_n
                 current_embedding = np.sum(feature_list, axis=0)
                 if X_image is None:  # initialize lazy
                     X_image = np.zeros(shape=[len(ids)] + list(current_embedding.shape), dtype=np.float32)
-                X_image[ids_mapping[record['id']]] = current_embedding
+                idx = ids_mapping[record['id']]
+                X_image[idx] = current_embedding
                 new_images_ids.append(record['id'])
+                current_image_indices.append(idx)
 
     logger.info('calculated %i new image embeddings' % len(new_images_ids))
     if len(new_images_ids) > 0:
@@ -230,7 +236,9 @@ def get_image_features(records, ids, key_image, data_dir, image_model_function_n
         np.save(fn_images_embeddings, images_embeddings)
         np.save(fn_images_ids, images_ids)
 
-    return X_image
+    X_image_flag = np.zeros(shape=len(ids), dtype=np.float32)
+    X_image_flag[current_image_indices] = 1.
+    return X_image, X_image_flag.reshape((-1, 1))
 
 
 def get_texts(contents, keys=('postText', 'targetTitle', 'targetDescription', 'targetKeywords', 'targetParagraphs',
@@ -304,8 +312,13 @@ def create_cnn_image(input, shape, settings):
     return x
 
 
+def create_identity(input, **unused):
+    return input
+
+
 def create_inputs_and_embedded(embedding_weights, input_shapes):
     keys = sorted(list(input_shapes.keys()))
+    # add text input fields. Consider only elements that have "max_length"
     inputs_text = {k: Input(shape=(input_shapes[k]['max_length'],), dtype='int32', name=k.replace(',', '-') + '_input')
                    for k in keys if 'max_length' in input_shapes[k]}
 
@@ -323,7 +336,7 @@ def create_inputs_and_embedded(embedding_weights, input_shapes):
 
     embedded_text = {k: embedding(inputs_text[k]) for k in inputs_text.keys()}
 
-    # add already embedded input (e.g. image data)
+    # add already embedded input (e.g. image data). Consider only elements that have "input_shape"
     inputs_other = {k: Input(shape=input_shapes[k]['input_shape'], dtype='float32', name=k + '_input')
                     for k in keys if 'input_shape' in input_shapes[k]}
     embedded_other = {k: Reshape((-1,))(inputs_other[k]) for k in inputs_other.keys()}
@@ -366,9 +379,10 @@ def records_to_features(records, nlp, shapes, nb_threads_parse=3, max_entries=1,
         logger.info('add image features...')
         assert data_dir is not None, 'key_image is not None, but no data_dir given'
 
-        X_image = get_image_features(records, ids, key_image, data_dir, image_model_function_name)
+        X_image, X_image_flag = get_image_features(records, ids, key_image, data_dir, image_model_function_name)
         assert X_image is not None, 'no image data found in records'
         X[key_image] = X_image
+        X[IMAGE_FLAG_KEY] = X_image_flag
 
     return X, labels
 
@@ -642,9 +656,12 @@ def train(model_dir, train_dir, dev_dir,  # fs locations
 
     # set image data settings if not given
     if use_images:
-        if 'postMedia' not in feature_shapes:
-            feature_shapes['postMedia'] = {'model': create_cnn_image.__name__, 'layers': [128]}
-        feature_shapes['postMedia']['input_shape'] = train_X[IMAGE_KEY].shape[1:]
+        if IMAGE_KEY not in feature_shapes:
+            feature_shapes[IMAGE_KEY] = {'model': create_cnn_image.__name__, 'layers': [128]}
+        feature_shapes[IMAGE_KEY]['input_shape'] = train_X[IMAGE_KEY].shape[1:]
+        # add "image available" flag
+        feature_shapes[IMAGE_FLAG_KEY] = {'model': create_identity.__name__,
+                                          'input_shape': train_X[IMAGE_FLAG_KEY].shape[1:]}
 
     logger.info('use setting: %s' % json.dumps(setting).replace(' ', ''))
     logger.info('use feature_shapes: %s' % json.dumps(feature_shapes).replace(' ', ''))
