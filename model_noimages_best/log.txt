@@ -1,0 +1,5 @@
+2018-07-03 09:04:02,913 INFO Read data
+2018-07-03 09:04:04,313 INFO use setting: {"final_layers":[512],"dropout":0.5,"learn_rate":0.001}
+2018-07-03 09:04:04,313 INFO use feature_shapes: {"targetParagraphs":{"model":"create_lstm","max_length":500,"nr_hidden":64},"postText":{"model":"create_lstm","max_length":50,"nr_hidden":30},"targetTitle":{"model":"create_lstm","max_length":50,"nr_hidden":30},"targetKeywords":{"model":"create_lstm","max_length":100,"nr_hidden":30},"targetDescription":{"model":"create_lstm","max_length":100,"nr_hidden":30}}
+2018-07-03 09:04:04,316 DEBUG mask_zero=True
+2018-07-03 10:41:04,909 INFO remove embeddings from model...
