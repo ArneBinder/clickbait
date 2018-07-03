@@ -1,11 +1,11 @@
 """
-TAKEN FROM https://github.com/explosion/spacy/blob/master/examples/deep_learning_keras.py
+BASED ON
+    https://github.com/explosion/spacy/blob/master/examples/deep_learning_keras.py
 
-This example shows how to use an LSTM sentiment classification model trained using Keras in spaCy. spaCy splits the document into sentences, and each sentence is classified using the LSTM. The scores for the sentences are then aggregated to give the document score. This kind of hierarchical model is quite difficult in "pure" Keras or Tensorflow, but it's very effective. The Keras example on this dataset performs quite poorly, because it cuts off the documents so that they're a fixed size. This hurts review accuracy a lot, because people often summarise their rating in the final sentence
-
-Prerequisites:
-spacy download en_vectors_web_lg
-pip install keras==2.0.9 numpy cytoolz tensorflow plac
+install prerequisites:
+    pip install keras numpy cytoolz tensorflow plac spacy
+    # spacy model, see SPACY_MODEL below
+    pip install https://github.com/explosion/spacy-models/releases/download/en_vectors_web_lg-2.0.0/en_vectors_web_lg-2.0.0.tar.gz#en_vectors_web_lg
 
 Compatible with: spaCy v2.0.0+
 """
@@ -63,58 +63,6 @@ def load_model(path, nlp):
     embeddings = get_embeddings(nlp.vocab)
     model.set_weights([embeddings] + lstm_weights)
     return model, config_dict, image_embedding_function
-
-
-# DEPRECATED
-class SentimentAnalyser(object):
-    @classmethod
-    def load(cls, path, nlp, max_lengths):
-        with (path / 'config.json').open() as file_:
-            model = model_from_json(file_.read())
-        with (path / 'model').open('rb') as file_:
-            lstm_weights = pickle.load(file_)
-        embeddings = get_embeddings(nlp.vocab)
-        model.set_weights([embeddings] + lstm_weights)
-        return cls(model, max_lengths=max_lengths)
-
-    def __init__(self, model, max_lengths):
-        self._model = model
-        self.max_lengths = max_lengths
-
-    def __call__(self, doc):
-        X = get_text_features([doc], self.max_lengths)
-        y = self._model.predict(X)
-        self.set_sentiment(doc, y)
-
-    def pipe(self, docs, batch_size=1000, n_threads=2):
-        for minibatch in cytoolz.partition_all(batch_size, docs):
-            minibatch = list(minibatch)
-            sentences = []
-            for doc in minibatch:
-                sentences.extend(doc.sents)
-            Xs = get_text_features(sentences, self.max_lengths)
-            ys = self._model.predict(Xs)
-            for sent, label in zip(sentences, ys):
-                sent.doc.sentiment += label - 0.5
-            for doc in minibatch:
-                yield doc
-
-    def set_sentiment(self, doc, y):
-        doc.sentiment = float(y[0])
-        # Sentiment has a native slot for a single float.
-        # For arbitrary data storage, there's:
-        # doc.user_data['my_data'] = y
-
-
-# DEPRECATED
-def get_labelled_sentences(docs, doc_labels):
-    labels = []
-    sentences = []
-    for doc, y in zip(docs, doc_labels):
-        for sent in doc.sents:
-            sentences.append(sent)
-            labels.append(y)
-    return sentences, np.asarray(labels, dtype='int32')
 
 
 def get_text_features(docs_w_context, max_lengths):
@@ -238,7 +186,9 @@ def get_image_features(records, ids, key_image, data_dir, image_model_function_n
 
     X_image_flag = np.zeros(shape=len(ids), dtype=np.float32)
     X_image_flag[current_image_indices] = 1.
-    return X_image, X_image_flag.reshape((-1, 1))
+    # reshape to prepare for concatenation
+    X_image_flag = X_image_flag.reshape((-1, 1))
+    return X_image, X_image_flag
 
 
 def get_texts(contents, keys=('postText', 'targetTitle', 'targetDescription', 'targetKeywords', 'targetParagraphs',
@@ -316,7 +266,7 @@ def create_identity(input, **unused):
     return input
 
 
-def create_inputs_and_embedded(embedding_weights, input_shapes):
+def create_inputs_and_embedders(embedding_weights, input_shapes):
     keys = sorted(list(input_shapes.keys()))
     # add text input fields. Consider only elements that have "max_length"
     inputs_text = {k: Input(shape=(input_shapes[k]['max_length'],), dtype='int32', name=k.replace(',', '-') + '_input')
@@ -349,7 +299,7 @@ def create_inputs_and_embedded(embedding_weights, input_shapes):
 def create_model(embedding_weights, feature_shapes, setting):
     keys = sorted(list(feature_shapes.keys()))
 
-    inputs, embedded = create_inputs_and_embedded(embedding_weights=embedding_weights, input_shapes=feature_shapes)
+    inputs, embedded = create_inputs_and_embedders(embedding_weights=embedding_weights, input_shapes=feature_shapes)
 
     singles = {k: globals()[feature_shapes[k]['model']](input=embedded[k], shape=feature_shapes[k], settings=setting) for i, k in enumerate(keys)}
     joint = concatenate(as_list(singles))
