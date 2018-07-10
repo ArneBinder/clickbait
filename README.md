@@ -71,6 +71,7 @@ Train multiple models by calling:
 with mandatory parameters:
 * `PARAMETER_FILE`: path to the parameter file, see [parameters.txt](models/parameters.txt) for an example.
         Every line results in one (or multiple, see `NUMBER_REPETITIONS`) training run(s).
+        ATTENTION: Spaces are not allowed *within* the json parts! (spaces are used to split the line into different arguments)
 * `NUMBER_REPETITIONS`: number of repetitions for every setting defined in `PARAMETER_FILE`.
 * `TRAIN_DATA_DIRECTORY`: directory containing training data such as presented [here](https://www.clickbait-challenge.org/#data) (the zip file has to be uncompressed)
 * `DEV_DATA_DIRECTORY`: directory containing dev data (used for early stopping) such as presented [here](https://www.clickbait-challenge.org/#data) (the zip file has to be uncompressed)
