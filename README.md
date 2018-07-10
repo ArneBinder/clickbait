@@ -66,7 +66,7 @@ with parameters:
 
 Train multiple models by calling:
 ```bash
-~/miniconda/envs/clickbait/bin/python clickbait.py PARAMETER_FILE NUMBER_REPETITIONS --image-embedding-function None|IMAGE_EMBEDDING_FUNCTION --nr-examples 0|NUMBER_EXAMPLES --nb-epoch NUMBER_EPOCHS --nb-threads NUMBER_THREADS --train-dir TRAIN_DATA_DIRECTORY --dev-dir DEV_DATA_DIRECTORY
+~/miniconda/envs/clickbait/bin/python clickbait.py train_multi PARAMETER_FILE NUMBER_REPETITIONS --image-embedding-function None|IMAGE_EMBEDDING_FUNCTION --nr-examples 0|NUMBER_EXAMPLES --nb-epoch NUMBER_EPOCHS --nb-threads NUMBER_THREADS --train-dir TRAIN_DATA_DIRECTORY --dev-dir DEV_DATA_DIRECTORY
 ```
 with mandatory parameters:
 * `PARAMETER_FILE`: path to the parameter file, see [parameters.txt](models/parameters.txt) for an example.
@@ -85,7 +85,7 @@ and optional parameters:
 
 Example call:
 ```bash
-~/miniconda/envs/clickbait/bin/python clickbait.py models/parameters.txt 3 --image-embedding-function inception_resnet_v2.InceptionResNetV2 --nb-epoch 50 --nb-threads 4 --train-dir TRAIN_DATA_DIRECTORY --dev-dir DEV_DATA_DIRECTORY
+~/miniconda/envs/clickbait/bin/python clickbait.py train_multi models/parameters.txt 3 --image-embedding-function inception_resnet_v2.InceptionResNetV2 --nb-epoch 50 --nb-threads 4 --train-dir TRAIN_DATA_DIRECTORY --dev-dir DEV_DATA_DIRECTORY
 ```
 
 When training has finished, the models are located in the directory containing `PARAMETER_FILE`.
