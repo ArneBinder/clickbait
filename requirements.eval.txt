@@ -1,0 +1,4 @@
+# result evaluation
+ipykernel
+matplotlib
+pandas
