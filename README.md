@@ -21,7 +21,7 @@ rm ~/miniconda.sh
 echo "PATH=\$PATH:\$HOME/miniconda/bin" >> .bash_profile
 source ~/.bash_profile
 ```
-
+When `git` and `conda` are available:
 
 ```bash
 # create python 3 environment (named `clickbait`) with conda (and install pip into it)
