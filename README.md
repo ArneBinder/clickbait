@@ -58,6 +58,6 @@ python clickbait.py --model-dir MODEL_DIRECTORY -i INPUT_DIRECTORY -o OUTPUT_DIR
 ```
 with parameters:
 * `MODEL_DIRECTORY`: directory containing the files model_config.json and model_weights
-* `INPUT_DIRECTORY`: directory containing data such as presented at [here](https://www.clickbait-challenge.org/#data) (the zip file has to be uncompressed)
+* `INPUT_DIRECTORY`: directory containing data such as presented [here](https://www.clickbait-challenge.org/#data) (the zip file has to be uncompressed)
 * `OUTPUT_DIRECTORY`: the result is written here
 
