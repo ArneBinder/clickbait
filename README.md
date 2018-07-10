@@ -45,8 +45,9 @@ pip install https://github.com/explosion/spacy-models/releases/download/en_vecto
 ## Prediction
 
 This repo includes two trained models, [noimages](models/noimages) and [wimages](models/wimages). They are trained on
-[Clickbait Challenge](https://www.clickbait-challenge.org/) data
-([clickbait17-train-170630.zip](http://www.uni-weimar.de/medien/webis/corpora/corpus-webis-clickbait-17/clickbait17-train-170630.zip) and [clickbait16-train-170331.zip](http://www.uni-weimar.de/medien/webis/corpora/corpus-webis-clickbait-17/clickbait16-train-170331.zip)
+[Clickbait Challenge data](https://www.clickbait-challenge.org/#data)
+([clickbait17-train-170630.zip](http://www.uni-weimar.de/medien/webis/corpora/corpus-webis-clickbait-17/clickbait17-train-170630.zip)
+and [clickbait16-train-170331.zip](http://www.uni-weimar.de/medien/webis/corpora/corpus-webis-clickbait-17/clickbait16-train-170331.zip)
 was used for early stopping). The architecture consists of bi-GRUs followed by dense layers. [wimages](models/wimages)
 additionally uses [InceptionResNetV2](https://keras.io/applications/#inceptionresnetv2) to embed image data,
 if available, that is concatenated with the bi-GRU output.
