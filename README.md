@@ -1,7 +1,8 @@
 # Clickbait
 
-Train and use simple neural models for clickbait prediction. See
-[Clickbait Challenge](https://www.clickbait-challenge.org/) for further information regarding clickbait and used data formats.
+Train and use simple neural models for clickbait prediction. See the
+[Clickbait Challenge website](https://www.clickbait-challenge.org/) for further information regarding clickbait,
+clickbait prediction and used data formats.
 
 ## Usage
 
