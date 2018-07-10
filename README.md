@@ -79,7 +79,7 @@ with mandatory parameters:
 * `DEV_DATA_DIRECTORY`: directory containing dev data (used for early stopping) such as presented [here](https://www.clickbait-challenge.org/#data) (the zip file has to be uncompressed)
 
 and optional parameters:
-* `IMAGE_EMBEDDING_FUNCTION`(default=`None`):  if not `Ǹone` (default), use this function to embed the images. Has to have the format
+* `IMAGE_EMBEDDING_FUNCTION`(default=`None`):  if not `None`, use this function to embed the images. Has to have the format
         `module.function`, where `module` is a submodule of `keras.applications` and `function` the respective
         embedding function. See [https://keras.io/applications/](https://keras.io/applications/) for further information.
 * `NUMBER_EXAMPLES`(default=0): if >0, use only the first `NUMBER_EXAMPLES` examples to train the model.
