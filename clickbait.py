@@ -382,7 +382,9 @@ def get_max_lengths_from_config(config):
         n = l['name']
         if n.endswith('_input'):
             k = n[:-len('_input')]
-            res[k.replace('-', ',')] = {'max_length': l['config']['batch_input_shape'][-1]}
+            # TODO: hacky solution. better name text inputs with prefix "_textinput" (see create_inputs_and_embedders)
+            if k != IMAGE_FLAG_KEY:
+                res[k.replace('-', ',')] = {'max_length': l['config']['batch_input_shape'][-1]}
     return res
 
 
