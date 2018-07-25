@@ -117,6 +117,7 @@ def get_image_features(records, ids, key_image, data_dir, image_model_function_n
         dummy_output = model.predict(dummy_input)
         X_image = np.zeros(shape=[len(ids)] + list(dummy_output.shape), dtype=np.float32)
         X_image_flag = np.zeros(shape=len(ids), dtype=np.float32)
+        logger.warning('discard image data')
         return X_image, X_image_flag
 
     preprocessing_function = getattr(model_module, 'preprocess_input')
