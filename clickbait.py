@@ -100,9 +100,10 @@ def get_text_features(docs_w_context, max_lengths):
     return Xs, labels, ids
 
 
-def get_image_features(records, ids, key_image, data_dir, image_model_function_name='vgg16.VGG16'):
-
+def get_image_features(records, ids, key_image, data_dir, image_model_function_name='vgg16.VGG16',
+                       discard_image_data=False):
     X_image = None
+    image_target_size = (224, 224)
 
     names = tuple(image_model_function_name.split('.'))
     assert len(names) == 2, 'image_model_function_name=%s has wrong format. Expected: <module_name>.<function_name>' \
@@ -110,6 +111,14 @@ def get_image_features(records, ids, key_image, data_dir, image_model_function_n
     model_module_name, model_function_name = names
     model_module = getattr(applications, model_module_name)
     model_function = getattr(model_module, model_function_name)
+    if discard_image_data:
+        model = model_function(weights='imagenet', include_top=False)
+        dummy_input = np.zeros(shape=[1] + list(image_target_size) + [3])
+        dummy_output = model.predict(dummy_input)
+        X_image = np.zeros(shape=[len(ids)] + list(dummy_output.shape), dtype=np.float32)
+        X_image_flag = np.zeros(shape=len(ids), dtype=np.float32)
+        return X_image, X_image_flag
+
     preprocessing_function = getattr(model_module, 'preprocess_input')
     logger.info('use %s to embed potential images for %i posts' % (model_function.__name__, len(ids)))
 
@@ -151,7 +160,7 @@ def get_image_features(records, ids, key_image, data_dir, image_model_function_n
             for path in record[key_image]:
                 img_path = data_dir / path
                 # TODO: adapt target size from model
-                img = image.load_img(img_path, target_size=(224, 224))
+                img = image.load_img(img_path, target_size=image_target_size)
                 x = image.img_to_array(img)
                 x = np.expand_dims(x, axis=0)
                 x = preprocessing_function(x)
@@ -317,7 +326,7 @@ def create_model(embedding_weights, feature_shapes, setting):
 
 
 def records_to_features(records, nlp, shapes, nb_threads_parse=3, max_entries=1, key_image=None, data_dir=None,
-                        image_model_function_name='vgg16.VGG16'):
+                        image_model_function_name='vgg16.VGG16', discard_image_data=False):
     logger.info("Parsing texts and convert to features...")
     keys_text_unflat = [k.split(',') for k in shapes.keys() if k != key_image]
     keys_text_split = sorted([item for sublist in keys_text_unflat for item in sublist])
@@ -329,7 +338,7 @@ def records_to_features(records, nlp, shapes, nb_threads_parse=3, max_entries=1,
         logger.info('add image features...')
         assert data_dir is not None, 'key_image is not None, but no data_dir given'
 
-        X_image, X_image_flag = get_image_features(records, ids, key_image, data_dir, image_model_function_name)
+        X_image, X_image_flag = get_image_features(records, ids, key_image, data_dir, image_model_function_name, discard_image_data)
         assert X_image is not None, 'no image data found in records'
         X[key_image] = X_image
         X[IMAGE_FLAG_KEY] = X_image_flag
@@ -404,10 +413,12 @@ def get_nlp():
     nb_threads_parse=("Number of threads used for parsing", "option", "p", int),
     max_entries=("Maximum number of entries that are considered for multi entry fields (e.g. targetParagraphs)",
                  "option", "x", int),
+    discard_images=("discard image data for image models", "flag", "D", bool),
 )
 def predict(model_dir, dev_dir, eval_out=None,  # fs locations
             nr_examples=-1, max_entries=-1,  # restrict data to a subset
-            nb_threads=10, nb_threads_parse=10  # performance: resource restrictions
+            nb_threads=10, nb_threads_parse=10,  # performance: resource restrictions
+            discard_images=False
             ):
 
     if nb_threads > 0:
@@ -437,7 +448,8 @@ def predict(model_dir, dev_dir, eval_out=None,  # fs locations
                                             nb_threads_parse=nb_threads_parse, max_entries=max_entries,
                                             key_image=IMAGE_KEY if use_images else None,
                                             data_dir=dev_dir,
-                                            image_model_function_name=image_embedding_function)
+                                            image_model_function_name=image_embedding_function,
+                                            discard_image_data=discard_images)
     # finally evaluate and write out dev results
     logger.info('predict...')
     if eval_out is None:
